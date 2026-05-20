@@ -5,6 +5,7 @@ The xlwings macros in xl/macros.py are thin wrappers that call these functions.
 from __future__ import annotations
 
 import math
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1140,11 +1141,21 @@ def _format_red_flags(scores: dict[str, int | None]) -> list[str]:
 
 def _format_earnings_date(raw) -> str:
     """yfinance returns earnings date as a list[date], a single date, or a
-    string. Normalize to 'YYYY-MM-DD'."""
+    string. After cache round-trip via str(), it may also be a literal
+    bracketed-string like '[datetime.date(2026, 5, 21)]'. Normalize all
+    of these to 'YYYY-MM-DD'."""
     if raw in (None, "", []):
         return ""
     if isinstance(raw, (list, tuple)) and raw:
         raw = raw[0]
+    if isinstance(raw, str):
+        # Strip the bracketed/datetime.date() wrapper if present.
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        m = re.search(r"datetime\.date\((\d+),\s*(\d+),\s*(\d+)\)", raw)
+        if m:
+            return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
     try:
         d = pd.to_datetime(raw, errors="coerce")
         if pd.isna(d):

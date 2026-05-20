@@ -103,15 +103,45 @@ def _resolve_sheet_files(xlsx_path: Path) -> dict[str, str]:
 
 def _inject_into_sheet_xml(sheet_xml_bytes: bytes,
                            sparklines: list[dict]) -> bytes:
-    """Return modified worksheet XML with an extLst → sparklineGroups appended."""
+    """Return modified worksheet XML with an extLst → sparklineGroups appended.
+
+    Also ensures the worksheet root declares xmlns:r, xmlns:mc, and
+    mc:Ignorable="x14" — without these, Excel rejects the file as
+    corrupt when it encounters the sparkline extension.
+    """
     parser = etree.XMLParser(remove_blank_text=False)
     root = etree.fromstring(sheet_xml_bytes, parser)
+
+    # Reconstruct the worksheet root with required namespace declarations.
+    # lxml doesn't let us mutate the root's nsmap in place, so we build a
+    # new root, copy all attrs/children, and replace.
+    main_ns = NSMAP_PAIRS = {
+        None: _NS_MAIN,
+        "r": _NS_REL,
+        "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+        "x14": _NS_X14,
+        "xr": "http://schemas.microsoft.com/office/spreadsheetml/2014/revision",
+    }
+    new_root = etree.Element(
+        f"{{{_NS_MAIN}}}worksheet",
+        nsmap=NSMAP_PAIRS,
+    )
+    # Carry over attributes (rare on the worksheet root but possible)
+    for k, v in root.attrib.items():
+        new_root.set(k, v)
+    new_root.set(
+        "{http://schemas.openxmlformats.org/markup-compatibility/2006}Ignorable",
+        "x14ac xr xr2 xr3",
+    )
+    # Copy children
+    for child in root:
+        new_root.append(child)
+    root = new_root
 
     # Build the new extension element
     ext = etree.SubElement(
         _ensure_extLst(root),
         f"{{{_NS_MAIN}}}ext",
-        nsmap={"x14": _NS_X14},
     )
     ext.set("uri", _SPARKLINE_EXT_URI)
 
@@ -120,17 +150,22 @@ def _inject_into_sheet_xml(sheet_xml_bytes: bytes,
         nsmap={"xm": _NS_XM},
     )
     spark_group = etree.SubElement(spark_groups, f"{{{_NS_X14}}}sparklineGroup")
-    spark_group.set("type", "line")
     spark_group.set("displayEmptyCellsAs", "gap")
-    spark_group.set("markers", "0")
+    spark_group.set("type", "line")
 
     # Series color: deep blue (matches our SECTION_FILL palette tone)
     color_series = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorSeries")
     color_series.set("rgb", "FF1F4E79")
-    color_axis = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorAxis")
-    color_axis.set("rgb", "FF000000")
     color_negative = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorNegative")
     color_negative.set("rgb", "FFEF4444")
+    color_axis = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorAxis")
+    color_axis.set("rgb", "FF000000")
+    color_markers = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorMarkers")
+    color_markers.set("rgb", "FF1F4E79")
+    color_first = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorFirst")
+    color_first.set("rgb", "FF1F4E79")
+    color_last = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorLast")
+    color_last.set("rgb", "FF1F4E79")
     color_high = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorHigh")
     color_high.set("rgb", "FF10B981")
     color_low = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorLow")

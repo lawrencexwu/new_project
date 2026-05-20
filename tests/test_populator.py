@@ -103,6 +103,17 @@ def test_format_earnings_date():
     assert populator._format_earnings_date([]) == ""
 
 
+def test_format_earnings_date_handles_cached_string_form():
+    """yfc.calendar caches values as str(v), so a list-of-date round-trips
+    as '[datetime.date(2026, 5, 21)]' — needs to be parsed back."""
+    assert populator._format_earnings_date(
+        "[datetime.date(2026, 5, 21)]"
+    ) == "2026-05-21"
+    assert populator._format_earnings_date(
+        "datetime.date(2026, 7, 28)"
+    ) == "2026-07-28"
+
+
 def test_fade_growth():
     g = populator._fade_growth(0.20, 0.15, years=5, terminal=0.025)
     assert len(g) == 5
