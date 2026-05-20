@@ -420,6 +420,7 @@ def build_ticker_template(out_path: Path) -> Path:
     _label_value(ws, r, 10, "Short Int % Float", fmt=S.PCT_FMT)
     r += 1
     _label_value(ws, r, 1, "3M EPS Revision", fmt=S.PCT_FMT)
+    _label_value(ws, r, 4, "Form 4 Filings (90d)", fmt=S.INT_FMT)
     r += 2
 
     r = _section(ws, r, 1, "Top Red Flags (auto-populated from Analysis tab)", span=12)

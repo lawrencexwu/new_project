@@ -21,12 +21,17 @@ Market_Daily.xlsx        ← opened every morning
                   Reasoning · Outcome · Lesson)
   Positions       holdings + auto-computed P&L + pairwise correlation
                   matrix (90d daily returns, red/white/blue scale)
+  Summary         aggregates every Ticker_*.xlsx Cover sheet into one
+                  ranked table (Upside · MoS · Quality · EDF · Altman ·
+                  Next Earnings · 3M EPS Revision) with color scales
+  Earnings Calendar  next 60 days for watchlist + positions + summary
   Settings
 
 Ticker_<SYM>.xlsx        ← cloned per ticker
   Cover           headline tiles (price · DCF FV · upside · MoS ·
                   quality score · EDF · Altman Z · next earnings ·
-                  insider net · short interest · 3M EPS revision) +
+                  insider net · short interest · 3M EPS revision ·
+                  Form 4 filing count) +
                   auto-flagged red flags + thesis/risks/pre-mortem
   Market          live quote, vol (HV30/90/365 + ATM IV), CAPM block,
                   debt market block
@@ -88,6 +93,9 @@ python populate.py --snapshot NVDA
 
 # List all snapshots in the archive (newest first)
 python populate.py --list-archive
+
+# Diagnose setup: check paths, API keys, network reachability
+python populate.py --doctor
 ```
 
 ## xlwings macros (in-place refresh from inside Excel)
@@ -166,11 +174,12 @@ populate.py  workbook-filling CLI (`--market`, `<TICKER>`, `--snapshot`)
 
 ```bash
 python -m pytest tests/ -v
-# 40 passing — ratios, scoring, DCF, KMV, Merton, Altman, Hillegeist,
+# 44 passing — ratios, scoring, DCF, KMV, Merton, Altman, Hillegeist,
 # signals, multiples, owner earnings, capital allocation, EDGAR concept
-# extraction, populator helpers, end-to-end populator across every
-# sheet, per-quarter ratios, multiples band, asset-light industry
-# gating, positions correlation, screener flagging, snapshot-to-archive
+# extraction + Form 4 filtering, populator helpers, end-to-end populator
+# across every sheet, per-quarter ratios, multiples band, asset-light
+# industry gating, positions correlation, screener flagging, summary
+# aggregation, snapshot-to-archive
 ```
 
 CI runs the suite on every PR (see `.github/workflows/test.yml`) and
@@ -201,5 +210,10 @@ uploads the built workbook templates as artifacts.
   that doesn't show in $ weights)
 - Lessons Learned tab for post-mortems
 - Auto-screener flagging double-buy-signal names
+- Watchlist Summary tab aggregating every Ticker_*.xlsx into one
+  ranked dashboard (Upside · MoS · Quality · EDF · Altman · Next Earnings)
+- Earnings Calendar tab (next 60 days, sorted)
+- Form 4 insider filing count (last 90 days) from SEC EDGAR submissions
 - Timestamped snapshot to Archive + `--list-archive` CLI
+- `--doctor` CLI to diagnose paths, API keys, and network reachability
 - SEC EDGAR fallback for statements when yfinance returns empty

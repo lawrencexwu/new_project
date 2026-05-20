@@ -1045,6 +1045,14 @@ def _populate_cover(wb, ticker: str, info: dict, market: dict,
     rev = yfc.eps_revisions(ticker)
     write_label_value(ws, "3M EPS Revision", _eps_revision_3m(rev))
 
+    # Form 4 filing count (last 90 days) — direction-agnostic but a useful
+    # activity signal where yfinance insider data is sparse.
+    try:
+        write_label_value(ws, "Form 4 Filings (90d)",
+                          edgar.form4_count(ticker, days=90))
+    except Exception:
+        pass
+
     # Top Red Flags
     red_flags = _format_red_flags(analysis.get("scores", {}))
     rf_row = find_label_row(ws, "Top Red Flags (auto-populated from Analysis tab)")

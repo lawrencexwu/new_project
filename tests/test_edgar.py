@@ -110,3 +110,49 @@ def test_statement_from_concepts_empty_when_no_facts(monkeypatch):
     assert edgar_client.income_statement("EMPTY").empty
     assert edgar_client.balance_sheet("EMPTY").empty
     assert edgar_client.cashflow("EMPTY").empty
+
+
+def _fake_submissions():
+    # Mix of forms, with some Form 4s in the last 90 days and some older
+    today = pd.Timestamp.now().normalize()
+    return {
+        "name": "Acme Corp",
+        "filings": {
+            "recent": {
+                "form": ["10-K", "4", "4", "10-Q", "4", "8-K", "4"],
+                "filingDate": [
+                    (today - pd.Timedelta(days=30)).strftime("%Y-%m-%d"),
+                    (today - pd.Timedelta(days=15)).strftime("%Y-%m-%d"),  # Form 4 recent
+                    (today - pd.Timedelta(days=45)).strftime("%Y-%m-%d"),  # Form 4 recent
+                    (today - pd.Timedelta(days=20)).strftime("%Y-%m-%d"),
+                    (today - pd.Timedelta(days=85)).strftime("%Y-%m-%d"),  # Form 4 recent
+                    (today - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
+                    (today - pd.Timedelta(days=120)).strftime("%Y-%m-%d"),  # Form 4 too old
+                ],
+                "accessionNumber": ["A1", "A2", "A3", "A4", "A5", "A6", "A7"],
+                "reportDate": [None] * 7,
+                "primaryDocument": ["doc.htm"] * 7,
+            }
+        }
+    }
+
+
+def test_form4_filings_filters_by_form_and_date(monkeypatch):
+    monkeypatch.setattr(edgar_client, "_submissions",
+                        lambda ticker, force=False: _fake_submissions())
+    df = edgar_client.recent_form4_filings("FAKE", days=90)
+    assert len(df) == 3
+    assert set(df["accessionNumber"]) == {"A2", "A3", "A5"}
+
+
+def test_form4_count(monkeypatch):
+    monkeypatch.setattr(edgar_client, "_submissions",
+                        lambda ticker, force=False: _fake_submissions())
+    assert edgar_client.form4_count("FAKE", days=90) == 3
+    assert edgar_client.form4_count("FAKE", days=200) == 4
+
+
+def test_form4_count_handles_empty(monkeypatch):
+    monkeypatch.setattr(edgar_client, "_submissions",
+                        lambda ticker, force=False: None)
+    assert edgar_client.form4_count("EMPTY") == 0

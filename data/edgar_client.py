@@ -205,3 +205,69 @@ def balance_sheet(ticker: str, force: bool = False) -> pd.DataFrame:
 
 def cashflow(ticker: str, force: bool = False) -> pd.DataFrame:
     return _statement_from_concepts(ticker, _CF_CONCEPTS, force=force)
+
+
+# -----------------------------------------------------------
+# Form 4 (insider transactions) — submissions endpoint approach
+# -----------------------------------------------------------
+
+def _submissions(ticker: str, force: bool = False) -> dict | None:
+    cik = ticker_to_cik(ticker)
+    if cik is None:
+        return None
+    key = f"{ticker}_submissions"
+
+    def fetch():
+        url = f"{BASE}/submissions/CIK{cik}.json"
+        try:
+            r = requests.get(url, headers=_headers(), timeout=20)
+        except Exception:
+            return pd.DataFrame()
+        if r.status_code != 200:
+            return pd.DataFrame()
+        import json as _json
+        return pd.DataFrame([{"j": _json.dumps(r.json())}])
+
+    blob = cache.get_or_fetch("insider", key, fetch, force=force)
+    if blob is None or blob.empty:
+        return None
+    import json as _json
+    return _json.loads(blob.iloc[0]["j"])
+
+
+def recent_form4_filings(ticker: str, days: int = 90,
+                         force: bool = False) -> pd.DataFrame:
+    """Return Form 4 filings from the last `days` days. Columns:
+    filingDate, accessionNumber, reportDate, primaryDocument."""
+    sub = _submissions(ticker, force=force)
+    if not sub:
+        return pd.DataFrame()
+    recent = sub.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    if not forms:
+        return pd.DataFrame()
+
+    rows = []
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+    for i, form in enumerate(forms):
+        if form != "4":
+            continue
+        filing_date = pd.to_datetime(recent.get("filingDate", [None] * len(forms))[i],
+                                     errors="coerce")
+        if pd.isna(filing_date) or filing_date < cutoff:
+            continue
+        rows.append({
+            "filingDate": filing_date,
+            "accessionNumber": recent.get("accessionNumber", [None] * len(forms))[i],
+            "reportDate": pd.to_datetime(
+                recent.get("reportDate", [None] * len(forms))[i],
+                errors="coerce",
+            ),
+            "primaryDocument": recent.get("primaryDocument", [None] * len(forms))[i],
+        })
+    return pd.DataFrame(rows)
+
+
+def form4_count(ticker: str, days: int = 90, force: bool = False) -> int:
+    df = recent_form4_filings(ticker, days=days, force=force)
+    return len(df)
