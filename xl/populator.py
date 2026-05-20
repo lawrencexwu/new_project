@@ -50,6 +50,7 @@ from compute import altman, capm, dcf, hillegeist, kmv, merton, multiples, ratio
 from data import edgar_client as edgar
 from data import fred_client as fc
 from data import yfinance_client as yfc
+from xl import sparkline_injector
 
 
 ASSET_LIGHT_INDUSTRY_HINTS = (
@@ -1190,8 +1191,12 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     wb = load_workbook(workbook_path)
     ws = wb["Daily Plan"]
 
-    _populate_positions(wb, force=force)
-    _populate_summary(wb)
+    # Aggregate sparkline specs across all populator subroutines, inject
+    # post-save in one pass.
+    sparkline_specs: dict[str, list[dict]] = {}
+
+    _populate_positions(wb, force=force, sparkline_specs=sparkline_specs)
+    _populate_summary(wb, sparkline_specs=sparkline_specs)
     _populate_earnings_calendar(wb, force=force)
 
     universe = config.get("universe", {})
@@ -1200,6 +1205,13 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     spy = yfc.prices("SPY", period="6mo", force=force)
     spy_close = _close_series(spy)
     spy_5d = signals.pct_change(spy_close, 5) or 0.0
+
+    # Sparklines for Daily Plan heatmaps. Data is written into hidden
+    # cells (cols 30-59 = 30 days of closes) and a native Excel line
+    # sparkline is injected post-save referencing those cells.
+    HIDDEN_DATA_COL_START = 30  # AD column
+    HIDDEN_DATA_COL_END = 59     # BG column
+    daily_plan_sparklines: list[dict] = []
 
     for section_label, universe_key in _HEATMAP_SECTIONS.items():
         anchor = find_section_anchor(ws, section_label)
@@ -1220,9 +1232,23 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
             five_d = signals.pct_change(close, 5)
             ws.cell(row=row, column=15,
                     value=(five_d - spy_5d) if five_d is not None else None)
-            # 30-day Unicode sparkline
+            # Write last 30 closes into hidden cols 30..59 for the sparkline
             last30 = close.tail(30).tolist()
-            ws.cell(row=row, column=16, value=block_sparkline(last30, width=20))
+            for j, v in enumerate(last30):
+                ws.cell(row=row, column=HIDDEN_DATA_COL_START + j, value=float(v))
+            # Record the sparkline target for post-save injection
+            from openpyxl.utils import get_column_letter as _col
+            start_col = _col(HIDDEN_DATA_COL_START)
+            end_col = _col(HIDDEN_DATA_COL_START + len(last30) - 1)
+            daily_plan_sparklines.append({
+                "data_range": f"'Daily Plan'!{start_col}{row}:{end_col}{row}",
+                "target_cell": f"P{row}",
+            })
+
+    # Hide the data columns
+    from openpyxl.utils import get_column_letter as _col
+    for c in range(HIDDEN_DATA_COL_START, HIDDEN_DATA_COL_END + 1):
+        ws.column_dimensions[_col(c)].hidden = True
 
     # Section 1 booleans
     if spy_close is not None and not spy_close.empty:
@@ -1253,7 +1279,15 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
                 v = fc.latest(code)
                 mws.cell(row=row, column=2, value=(v / 100.0) if v is not None else None)
 
+    if daily_plan_sparklines:
+        sparkline_specs["Daily Plan"] = daily_plan_sparklines
+
     wb.save(workbook_path)
+
+    # Inject native Excel line sparklines into the saved file
+    if sparkline_specs:
+        sparkline_injector.inject_line_sparklines(workbook_path, sparkline_specs)
+
     return workbook_path
 
 
@@ -1276,7 +1310,7 @@ def snapshot_to_archive(workbook_path: Path, archive_dir: Path | None = None) ->
     return snapshot_path
 
 
-def _populate_summary(wb) -> None:
+def _populate_summary(wb, sparkline_specs: dict | None = None) -> None:
     """Scan the configured tickers_dir for Ticker_*.xlsx files, read the
     Cover-sheet headline tiles from each, and aggregate into the Summary
     tab on Market_Daily."""
@@ -1355,17 +1389,30 @@ def _populate_summary(wb) -> None:
         summary.cell(row=r, column=11, value=row["next_earnings"])
         summary.cell(row=r, column=12, value=_to_number(row["eps_rev_3m"]))
         summary.cell(row=r, column=13, value=row["source"])
-        # 30-day Unicode sparkline (uses cached price data, no fresh fetch)
+        # Hidden price data for native sparkline (cols 20-49)
         try:
             px = yfc.prices(row["ticker"], period="3mo")
             close = _close_series(px)
-            if close is not None and not close.empty:
-                cell = summary.cell(row=r, column=14,
-                                    value=block_sparkline(close.tail(30).tolist(),
-                                                          width=20))
-                cell.font = _SPARKLINE_FONT
+            if close is not None and not close.empty and sparkline_specs is not None:
+                from openpyxl.utils import get_column_letter as _col
+                last30 = close.tail(30).tolist()
+                HIDDEN_START = 20
+                for j, v in enumerate(last30):
+                    summary.cell(row=r, column=HIDDEN_START + j,
+                                 value=float(v))
+                start_col = _col(HIDDEN_START)
+                end_col = _col(HIDDEN_START + len(last30) - 1)
+                sparkline_specs.setdefault("Summary", []).append({
+                    "data_range": f"Summary!{start_col}{r}:{end_col}{r}",
+                    "target_cell": f"N{r}",
+                })
         except Exception:
             pass
+
+    # Hide the data columns once
+    from openpyxl.utils import get_column_letter as _col
+    for c in range(20, 50):
+        summary.column_dimensions[_col(c)].hidden = True
 
 
 def _populate_earnings_calendar(wb, force: bool = False) -> None:
@@ -1519,7 +1566,8 @@ def _populate_screener(wb, force: bool = False) -> None:
         write_row += 1
 
 
-def _populate_positions(wb, force: bool = False) -> None:
+def _populate_positions(wb, force: bool = False,
+                        sparkline_specs: dict | None = None) -> None:
     """Read tickers + shares + cost basis (rows 4-28), compute current
     value, P&L, weights, and the pairwise correlation matrix."""
     if "Positions" not in wb.sheetnames:
@@ -1554,7 +1602,9 @@ def _populate_positions(wb, force: bool = False) -> None:
         price_data[p["ticker"]] = close
         current_prices[p["ticker"]] = float(close.iloc[-1])
 
-    # Write per-position rows
+    # Write per-position rows; hidden 30-day price data lives in cols 15-44
+    HIDDEN_START = 15
+    from openpyxl.utils import get_column_letter as _col
     total_value = 0.0
     for p in positions:
         cp = current_prices.get(p["ticker"])
@@ -1568,13 +1618,22 @@ def _populate_positions(wb, force: bool = False) -> None:
             if p["shares"] * p["cost"] > 0:
                 ws.cell(row=p["row"], column=8,
                         value=gain / (p["shares"] * p["cost"]))
-            # 30-day sparkline at col 10
+            # Hidden 30-day price data for native sparkline
             close = price_data.get(p["ticker"])
-            if close is not None:
-                sp_cell = ws.cell(row=p["row"], column=10,
-                                  value=block_sparkline(close.tail(30).tolist(),
-                                                        width=20))
-                sp_cell.font = _SPARKLINE_FONT
+            if close is not None and sparkline_specs is not None:
+                last30 = close.tail(30).tolist()
+                for j, v in enumerate(last30):
+                    ws.cell(row=p["row"], column=HIDDEN_START + j,
+                            value=float(v))
+                start_col = _col(HIDDEN_START)
+                end_col = _col(HIDDEN_START + len(last30) - 1)
+                sparkline_specs.setdefault("Positions", []).append({
+                    "data_range": f"Positions!{start_col}{p['row']}:{end_col}{p['row']}",
+                    "target_cell": f"J{p['row']}",
+                })
+
+    for c in range(HIDDEN_START, HIDDEN_START + 30):
+        ws.column_dimensions[_col(c)].hidden = True
 
     # Write weights and total
     if total_value > 0:
