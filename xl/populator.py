@@ -281,6 +281,11 @@ def populate_ticker(template_path: Path, output_path: Path, ticker: str,
         credit=credit_results,
     )
 
+    # Auto-fit columns on every sheet so the user doesn't have to manually
+    # double-click each column boundary.
+    for sheet_name in wb.sheetnames:
+        autofit_columns(wb[sheet_name])
+
     wb.save(output_path)
     return output_path
 
@@ -906,8 +911,19 @@ def _populate_valuation(wb, ticker, is_q, bs_q, cf_q, px_df, market: dict,
     return result
 
 
+_MAX_FORECAST_GROWTH = 0.40  # cap any single forecast year at 40% YoY
+
+
 def _consensus_growth(rev_est_df, current_rev) -> tuple[float, float]:
-    """Pull next-year and year-after revenue estimates; default to 0.05."""
+    """Return (g_y1, g_y2) as YEAR-OVER-YEAR growth rates.
+
+    g_y1 = (FY-current estimate / TTM) - 1
+    g_y2 = (FY-next estimate / FY-current estimate) - 1   ← NOT relative to TTM
+
+    Both are capped at _MAX_FORECAST_GROWTH to prevent compounding
+    extreme analyst expectations across the full 5-year horizon. Falls
+    back to 0.05 / 0.04 when consensus is missing.
+    """
     if rev_est_df is None or rev_est_df.empty or current_rev in (None, 0):
         return 0.05, 0.04
     df = rev_est_df.copy()
@@ -916,21 +932,32 @@ def _consensus_growth(rev_est_df, current_rev) -> tuple[float, float]:
         return 0.05, 0.04
     col = candidate_cols[0]
     periods = df.iloc[:, 0].astype(str).str.lower().tolist()
-    growths = []
-    for label, target in (("+1y", "+1y"), ("0y", "0y")):
-        pass
 
-    g_y1 = g_y2 = None
+    fy_current = fy_next = None
     for i, p in enumerate(periods):
         v = df.iloc[i][col]
         if pd.isna(v):
             continue
-        if "+1y" in p and g_y2 is None:
-            g_y2 = float(v) / float(current_rev) - 1
-        if ("0y" in p or "+0y" in p) and g_y1 is None:
-            g_y1 = float(v) / float(current_rev) - 1
-    g_y1 = g_y1 if g_y1 is not None else 0.05
-    g_y2 = g_y2 if g_y2 is not None else g_y1 * 0.8
+        if "+1y" in p and fy_next is None:
+            fy_next = float(v)
+        elif ("0y" in p or "+0y" in p) and fy_current is None:
+            fy_current = float(v)
+
+    g_y1 = (fy_current / float(current_rev) - 1) if fy_current else 0.05
+    if fy_current and fy_next:
+        g_y2 = fy_next / fy_current - 1
+    elif fy_next:
+        # Only +1y given; halve to approximate Y2-from-Y1 growth
+        g_y2 = (fy_next / float(current_rev) - 1) / 2
+    else:
+        g_y2 = g_y1 * 0.8
+
+    # Sanity cap. Analyst consensus for hyper-growth names regularly
+    # exceeds 40% YoY; compounding that across 5 years produces fantasy
+    # valuations. 40% is the upper bound of "fast-growing equity"
+    # assumptions in most published DCF templates.
+    g_y1 = max(min(g_y1, _MAX_FORECAST_GROWTH), -0.20)
+    g_y2 = max(min(g_y2, _MAX_FORECAST_GROWTH), -0.20)
     return g_y1, g_y2
 
 
@@ -1282,6 +1309,9 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     if daily_plan_sparklines:
         sparkline_specs["Daily Plan"] = daily_plan_sparklines
 
+    for sheet_name in wb.sheetnames:
+        autofit_columns(wb[sheet_name])
+
     wb.save(workbook_path)
 
     # Inject native Excel line sparklines into the saved file
@@ -1493,6 +1523,65 @@ def _index_labels(ws: Worksheet, cols: tuple[int, ...] = _DEFAULT_LABEL_COLS,
             if isinstance(v, str) and v and v not in out:
                 out[v] = (r, c)
     return out
+
+
+def autofit_columns(ws: Worksheet, max_width: float = 60.0,
+                    min_width: float = 8.0) -> None:
+    """Approximate Excel's AutoFit. Walks every cell and sets each column's
+    width to the longest displayed string + small padding. Respects merged
+    cells (skips them) and hidden columns (leaves untouched)."""
+    from openpyxl.utils import get_column_letter
+
+    # Skip hidden columns — those carry the sparkline price data
+    hidden_cols = {
+        letter for letter, dim in ws.column_dimensions.items()
+        if dim.hidden
+    }
+
+    # Build the set of merged cell coordinates so we don't measure them
+    merged_coords: set[tuple[int, int]] = set()
+    for mr in ws.merged_cells.ranges:
+        for row in range(mr.min_row, mr.max_row + 1):
+            for col in range(mr.min_col, mr.max_col + 1):
+                merged_coords.add((row, col))
+
+    widths: dict[str, float] = {}
+    for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row_cells:
+            if cell.value is None:
+                continue
+            if (cell.row, cell.column) in merged_coords:
+                # Only the top-left cell of a merged range has the value;
+                # skip to avoid blowing out the column width.
+                continue
+            letter = get_column_letter(cell.column)
+            if letter in hidden_cols:
+                continue
+            text = _format_for_width(cell.value, cell.number_format or "")
+            # 1.1 ratio approximates Calibri 11pt char width
+            w = len(text) * 1.1 + 2
+            if widths.get(letter, 0) < w:
+                widths[letter] = w
+
+    for letter, w in widths.items():
+        w = max(min_width, min(w, max_width))
+        ws.column_dimensions[letter].width = w
+
+
+def _format_for_width(value, fmt: str) -> str:
+    """Render value through its number_format so width calc matches display."""
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        if "%" in fmt:
+            return f"{value*100:,.1f}%"
+        if "$" in fmt or "USD" in fmt:
+            return f"${abs(value):,.2f}"
+        if "#,##0" in fmt:
+            decimals = 2 if "0.00" in fmt else 0
+            return f"{value:,.{decimals}f}"
+        return f"{value:,.2f}"
+    return str(value)
 
 
 def _to_number(v):

@@ -126,6 +126,58 @@ def test_consensus_growth_defaults_when_empty():
     assert g2 == 0.04
 
 
+def test_consensus_growth_g2_is_yoy_not_relative_to_current():
+    """The bug that produced $3.8T Y+5 revenue for NVDA: g_y2 was
+    computed as (FY+1 / TTM) - 1 instead of (FY+1 / FY0) - 1, which
+    inflates Y2 growth and then the fade carries the inflation forward."""
+    df = pd.DataFrame({
+        "period": ["0y", "+1y"],
+        "avg": [220, 300],   # FY current = 220, FY next = 300
+    })
+    g1, g2 = populator._consensus_growth(df, current_rev=216)
+    # g1 = 220/216 - 1 ≈ 1.85%
+    # g2 should be 300/220 - 1 ≈ 36.4%, NOT 300/216 - 1 ≈ 38.9%
+    assert abs(g1 - (220/216 - 1)) < 0.001
+    assert abs(g2 - (300/220 - 1)) < 0.001
+
+
+def test_consensus_growth_caps_extreme_analyst_optimism():
+    """40% YoY is the hard cap so we never compound fantasy valuations."""
+    df = pd.DataFrame({
+        "period": ["0y", "+1y"],
+        "avg": [500, 1000],  # implies 100%+ growth
+    })
+    g1, g2 = populator._consensus_growth(df, current_rev=200)
+    assert g1 <= populator._MAX_FORECAST_GROWTH
+    assert g2 <= populator._MAX_FORECAST_GROWTH
+
+
+def test_autofit_columns_sets_widths(tmp_path):
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "Short"
+    ws["B1"] = "A much longer string that should expand col B"
+    ws["C1"] = 1234567890123.45  # large number
+    populator.autofit_columns(ws)
+    assert ws.column_dimensions["A"].width >= 7
+    assert ws.column_dimensions["B"].width > ws.column_dimensions["A"].width
+    assert ws.column_dimensions["C"].width >= 10
+
+
+def test_autofit_skips_hidden_columns():
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "visible"
+    ws["B1"] = "this column is hidden and should not get resized"
+    ws.column_dimensions["B"].hidden = True
+    ws.column_dimensions["B"].width = 5.0
+    populator.autofit_columns(ws)
+    # B's width should remain whatever it was (not expanded)
+    assert ws.column_dimensions["B"].width == 5.0
+
+
 def test_populate_fin_stat_writes_revenue(workbook):
     wb, path = workbook
     is_q = _stmt({"Total Revenue": [100, 110, 120, 130],
