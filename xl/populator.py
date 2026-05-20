@@ -12,8 +12,11 @@ from typing import Any, Callable
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
+
+_BOLD_FONT = Font(name="Calibri", size=10, bold=True)
 
 import config
 from compute import altman, capm, dcf, hillegeist, kmv, merton, multiples, ratios, scoring, signals
@@ -1119,6 +1122,8 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     wb = load_workbook(workbook_path)
     ws = wb["Daily Plan"]
 
+    _populate_positions(wb, force=force)
+
     universe = config.get("universe", {})
 
     # SPY 5-day baseline for RS column
@@ -1193,6 +1198,87 @@ def snapshot_to_archive(workbook_path: Path, archive_dir: Path | None = None) ->
     snapshot_path = archive_dir / snapshot_name
     shutil.copy(workbook_path, snapshot_path)
     return snapshot_path
+
+
+def _populate_positions(wb, force: bool = False) -> None:
+    """Read tickers + shares + cost basis (rows 4-28), compute current
+    value, P&L, weights, and the pairwise correlation matrix."""
+    if "Positions" not in wb.sheetnames:
+        return
+    ws = wb["Positions"]
+
+    positions: list[dict] = []
+    for r in range(4, 29):
+        tkr = ws.cell(row=r, column=1).value
+        if not tkr or not str(tkr).strip():
+            continue
+        shares = ws.cell(row=r, column=3).value
+        cost = ws.cell(row=r, column=4).value
+        positions.append({
+            "row": r,
+            "ticker": str(tkr).strip().upper(),
+            "shares": float(shares or 0),
+            "cost": float(cost or 0),
+        })
+
+    if not positions:
+        return
+
+    # Pull prices for each held ticker
+    price_data: dict[str, pd.Series] = {}
+    current_prices: dict[str, float] = {}
+    for p in positions:
+        px = yfc.prices(p["ticker"], period="1y", force=force)
+        close = _close_series(px)
+        if close is None or close.empty:
+            continue
+        price_data[p["ticker"]] = close
+        current_prices[p["ticker"]] = float(close.iloc[-1])
+
+    # Write per-position rows
+    total_value = 0.0
+    for p in positions:
+        cp = current_prices.get(p["ticker"])
+        if cp is not None:
+            ws.cell(row=p["row"], column=5, value=cp)
+            cur_val = cp * p["shares"]
+            ws.cell(row=p["row"], column=6, value=cur_val)
+            total_value += cur_val
+            gain = cur_val - p["shares"] * p["cost"]
+            ws.cell(row=p["row"], column=7, value=gain)
+            if p["shares"] * p["cost"] > 0:
+                ws.cell(row=p["row"], column=8,
+                        value=gain / (p["shares"] * p["cost"]))
+
+    # Write weights and total
+    if total_value > 0:
+        for p in positions:
+            cur_val = ws.cell(row=p["row"], column=6).value or 0
+            ws.cell(row=p["row"], column=9, value=cur_val / total_value)
+        ws.cell(row=30, column=6, value=total_value)
+
+    # Pairwise correlation matrix
+    held = [p["ticker"] for p in positions if p["ticker"] in price_data]
+    if len(held) < 2:
+        return
+    returns = pd.DataFrame({
+        t: price_data[t].pct_change()
+        for t in held
+    }).dropna(how="all").tail(90)
+    corr = returns.corr()
+
+    corr_anchor = 33
+    # Column headers
+    for i, t in enumerate(held):
+        ws.cell(row=corr_anchor + 1, column=2 + i, value=t).font = _BOLD_FONT
+        ws.cell(row=corr_anchor + 2 + i, column=1, value=t).font = _BOLD_FONT
+    # Matrix values
+    for i, t_row in enumerate(held):
+        for j, t_col in enumerate(held):
+            v = corr.iloc[i, j] if t_row in corr.index and t_col in corr.columns else None
+            if v is not None and not (isinstance(v, float) and math.isnan(v)):
+                ws.cell(row=corr_anchor + 2 + i, column=2 + j, value=float(v))
+                ws.cell(row=corr_anchor + 2 + i, column=2 + j).number_format = "0.00"
 
 
 def _close_series(px_df) -> pd.Series | None:

@@ -235,6 +235,66 @@ def test_populate_ticker_end_to_end(synthetic_data, tmp_path):
     assert an.cell(row=cap_row, column=2).value is not None
 
 
+def test_populate_positions_with_correlations(tmp_path, monkeypatch):
+    template = tmp_path / "Market_Daily.xlsx"
+    build_workbooks.build_market_daily(template)
+
+    # Pre-fill positions: 3 tickers with shares + cost
+    wb = load_workbook(template)
+    pos = wb["Positions"]
+    pos.cell(row=4, column=1, value="AAA")
+    pos.cell(row=4, column=2, value="Alpha Co")
+    pos.cell(row=4, column=3, value=100)
+    pos.cell(row=4, column=4, value=50.0)
+    pos.cell(row=5, column=1, value="BBB")
+    pos.cell(row=5, column=3, value=200)
+    pos.cell(row=5, column=4, value=30.0)
+    pos.cell(row=6, column=1, value="CCC")
+    pos.cell(row=6, column=3, value=50)
+    pos.cell(row=6, column=4, value=80.0)
+    wb.save(template)
+
+    # Patch prices: AAA & BBB share the same daily returns; CCC uses inverted returns
+    import numpy as np
+    rng = np.random.default_rng(seed=42)
+    base_returns = rng.normal(0.0005, 0.015, 120)
+
+    def make_path(returns, start):
+        path = [start]
+        for r in returns:
+            path.append(path[-1] * (1 + r))
+        return path[1:]
+
+    def fake_prices(ticker, period="1y", interval="1d", force=False):
+        dates = pd.date_range("2024-01-01", periods=120, freq="D")
+        if ticker == "AAA":
+            closes = make_path(base_returns, 100)
+        elif ticker == "BBB":
+            closes = make_path(base_returns, 50)
+        elif ticker == "CCC":
+            closes = make_path(-base_returns, 200)
+        else:
+            closes = [100] * 120
+        return pd.DataFrame({"date": dates, "Close": closes, "ticker": ticker})
+
+    monkeypatch.setattr(populator.yfc, "prices", fake_prices)
+    populator.populate_market_daily(template)
+
+    wb2 = load_workbook(template)
+    pos2 = wb2["Positions"]
+
+    assert pos2.cell(row=4, column=5).value is not None
+    # Correlation matrix anchor is at row 33 (header), matrix starts row 35
+    aaa_bbb_corr = pos2.cell(row=35, column=3).value  # AAA row, BBB col
+    assert aaa_bbb_corr is not None
+    assert abs(aaa_bbb_corr - 1.0) < 0.01  # same returns → corr ~1
+
+    # AAA & CCC have inverted daily returns → corr ~ -1
+    aaa_ccc_corr = pos2.cell(row=35, column=4).value  # AAA row, CCC col
+    assert aaa_ccc_corr is not None
+    assert abs(aaa_ccc_corr - (-1.0)) < 0.01
+
+
 def test_snapshot_to_archive(tmp_path):
     from openpyxl import Workbook
     wb = Workbook()

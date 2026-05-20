@@ -244,6 +244,54 @@ def build_market_daily(out_path: Path) -> Path:
         c.alignment = S.CENTER
         c.border = S.BOX
 
+    # --- Positions ---
+    pws = wb.create_sheet("Positions")
+    _set_header(pws, "Portfolio Positions & Correlations", 12)
+    _col_widths(pws, {1: 10, 2: 24, 3: 12, 4: 12, 5: 12, 6: 14, 7: 14, 8: 12, 9: 12})
+
+    headers = ["Ticker", "Name", "Shares", "Cost Basis", "Current Price",
+               "Current Value", "Gain/Loss $", "Gain/Loss %", "Weight %"]
+    for i, h in enumerate(headers):
+        c = pws.cell(row=3, column=i + 1, value=h)
+        c.fill = S.SUBSECTION_FILL
+        c.font = S.LABEL_FONT
+        c.alignment = S.CENTER
+        c.border = S.BOX
+    # 25 rows for positions
+    for r in range(4, 29):
+        for c in (1, 2, 3, 4):
+            pws.cell(row=r, column=c).fill = S.INPUT_FILL
+        pws.cell(row=r, column=3).number_format = S.INT_FMT
+        pws.cell(row=r, column=4).number_format = S.USD_FMT
+        pws.cell(row=r, column=5).number_format = S.USD_FMT
+        pws.cell(row=r, column=6).number_format = S.USD_FMT
+        pws.cell(row=r, column=7).number_format = S.USD_FMT
+        pws.cell(row=r, column=8).number_format = S.PCT_FMT
+        pws.cell(row=r, column=9).number_format = S.PCT_FMT
+        for c in range(1, 10):
+            pws.cell(row=r, column=c).border = S.BOX
+
+    # Totals row
+    tot_row = 30
+    pws.cell(row=tot_row, column=2, value="Total").font = S.LABEL_FONT
+    pws.cell(row=tot_row, column=6).number_format = S.USD_FMT
+    pws.cell(row=tot_row, column=7).number_format = S.USD_FMT
+
+    # Pairwise correlation matrix starts at row 33
+    corr_anchor = 33
+    pws.cell(row=corr_anchor, column=1, value="Pairwise Correlation (90d daily returns)").font = S.SECTION_FONT
+    pws.cell(row=corr_anchor, column=1).fill = S.SECTION_FILL
+    pws.merge_cells(start_row=corr_anchor, start_column=1,
+                    end_row=corr_anchor, end_column=12)
+    # 25x25 area for the matrix, gets filled by populator
+
+    rule = ColorScaleRule(
+        start_type="num", start_value=-1.0, start_color="2563EB",  # blue
+        mid_type="num", mid_value=0.0, mid_color="FFFFFF",
+        end_type="num", end_value=1.0, end_color="EF4444",         # red
+    )
+    pws.conditional_formatting.add(f"B{corr_anchor + 2}:Z{corr_anchor + 27}", rule)
+
     # --- Settings ---
     cws = wb.create_sheet("Settings")
     _set_header(cws, "Settings (managed via settings.local.json)", 4)
