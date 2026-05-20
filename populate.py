@@ -139,9 +139,19 @@ def _doctor():
 
     print("\n[Templates]")
     build_dir = Path(__file__).resolve().parent / "build"
-    for name in ("Market_Daily.xlsx", "Ticker_TEMPLATE.xlsx"):
-        p = build_dir / name
-        print(f"  {name:<22} {'exists' if p.exists() else 'missing (run `python -m xl.build_workbooks`)'}")
+    checks = [
+        ("Market_Daily.xlsx", settings.get("market_daily_path"),
+         build_dir / "Market_Daily.xlsx"),
+        ("Ticker_TEMPLATE.xlsx", settings.get("template_path"),
+         build_dir / "Ticker_TEMPLATE.xlsx"),
+    ]
+    for name, drive_path, build_path in checks:
+        if drive_path is not None and Path(drive_path).exists():
+            print(f"  {name:<22} found in Drive  {drive_path}")
+        elif build_path.exists():
+            print(f"  {name:<22} found in build/ (move to Drive)  {build_path}")
+        else:
+            print(f"  {name:<22} missing (run `python -m xl.build_workbooks`)")
 
     print("\n[Network checks]")
     try:
