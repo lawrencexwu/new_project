@@ -74,6 +74,35 @@ def test_ttm_sum():
     assert populator._ttm(df, "Revenue") == 460
 
 
+def test_ttm_uses_newest_quarters_even_when_columns_reversed():
+    """yfinance returns columns in descending date order. iloc[-4:] would
+    give the OLDEST 4 quarters without sorting — that bug made NVDA's
+    Owner Earnings TTM ~$99B instead of ~$120B."""
+    dates_desc = pd.date_range("2025-06-30", periods=5, freq="-1QE")
+    df = pd.DataFrame({"Total Revenue": [50, 40, 30, 20, 10]}, index=dates_desc).T
+    df = df.reset_index().rename(columns={"index": "line"})
+    # Last 4 IN DATE ORDER are 20, 30, 40, 50 → 140
+    # If we naively iloc[-4:] on the input columns we'd get 40, 30, 20, 10 → 100
+    assert populator._ttm(df, "Revenue") == 140
+
+
+def test_latest_value_uses_newest_quarter():
+    dates_desc = pd.date_range("2025-06-30", periods=4, freq="-1QE")
+    df = pd.DataFrame({"Total Revenue": [50, 40, 30, 20]}, index=dates_desc).T
+    df = df.reset_index().rename(columns={"index": "line"})
+    # Newest (2025-06-30) value is 50
+    assert populator._latest_value(df, "Revenue") == 50
+
+
+def test_format_earnings_date():
+    import datetime as dt
+    assert populator._format_earnings_date([dt.date(2026, 5, 21)]) == "2026-05-21"
+    assert populator._format_earnings_date(dt.date(2026, 7, 28)) == "2026-07-28"
+    assert populator._format_earnings_date("2026-08-15") == "2026-08-15"
+    assert populator._format_earnings_date(None) == ""
+    assert populator._format_earnings_date([]) == ""
+
+
 def test_fade_growth():
     g = populator._fade_growth(0.20, 0.15, years=5, terminal=0.025)
     assert len(g) == 5

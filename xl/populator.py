@@ -172,13 +172,28 @@ def _latest_value(df: pd.DataFrame, label: str) -> float | None:
     row = _row_from_yf(df, label)
     if row is None or row.empty:
         return None
-    row = row.dropna()
+    row = _sort_by_date_index(row).dropna()
     if row.empty:
         return None
     try:
         return float(row.iloc[-1])
     except (TypeError, ValueError):
         return None
+
+
+def _sort_by_date_index(row: pd.Series) -> pd.Series:
+    """Reindex by date so iloc[-1] is the newest column. yfinance returns
+    columns in descending date order, so naive iloc[-1] would give the
+    oldest quarter."""
+    try:
+        idx_dt = pd.to_datetime(row.index, errors="coerce")
+        if idx_dt.isna().all():
+            return row
+        sorted_row = row.copy()
+        sorted_row.index = idx_dt
+        return sorted_row.sort_index()
+    except Exception:
+        return row
 
 
 # -----------------------------------------------------------
@@ -907,6 +922,7 @@ def _ttm(df, label: str) -> float | None:
     row = _row_from_yf(df, label)
     if row is None:
         return None
+    row = _sort_by_date_index(row)
     vals = pd.to_numeric(row, errors="coerce").dropna()
     if vals.empty:
         return None
@@ -1033,9 +1049,10 @@ def _populate_cover(wb, ticker: str, info: dict, market: dict,
     write_label_value(ws, "Altman Z + Bucket", altman_text)
 
     cal = yfc.calendar(ticker)
-    earnings_date = cal.get("Earnings Date") or cal.get("earningsDate") or ""
-    write_label_value(ws, "Next Earnings", str(earnings_date) if earnings_date else "")
-    days_to = _days_to(str(earnings_date))
+    earnings_raw = cal.get("Earnings Date") or cal.get("earningsDate") or ""
+    earnings_str = _format_earnings_date(earnings_raw)
+    write_label_value(ws, "Next Earnings", earnings_str)
+    days_to = _days_to(earnings_str)
     write_label_value(ws, "Days to Earnings", days_to)
 
     insider = yfc.insider_transactions(ticker)
@@ -1064,6 +1081,22 @@ def _format_red_flags(scores: dict[str, int | None]) -> list[str]:
     items = [(label, s) for label, s in scores.items() if s is not None and s < 5]
     items.sort(key=lambda x: x[1])
     return [f"• {label}: {s}/10" for label, s in items[:5]]
+
+
+def _format_earnings_date(raw) -> str:
+    """yfinance returns earnings date as a list[date], a single date, or a
+    string. Normalize to 'YYYY-MM-DD'."""
+    if raw in (None, "", []):
+        return ""
+    if isinstance(raw, (list, tuple)) and raw:
+        raw = raw[0]
+    try:
+        d = pd.to_datetime(raw, errors="coerce")
+        if pd.isna(d):
+            return str(raw)
+        return d.strftime("%Y-%m-%d")
+    except Exception:
+        return str(raw)
 
 
 def _days_to(s: str) -> int | None:
