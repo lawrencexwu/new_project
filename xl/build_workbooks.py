@@ -8,7 +8,7 @@ from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule, CellIsRule
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, PatternFill
 
 import config
 from xl import styles as S
@@ -58,7 +58,7 @@ def _col_widths(ws, widths: dict[int, float]):
 # Market_Daily.xlsx
 # -------------------------------------------------------------------
 
-HEATMAP_COLS = ["Ticker", "Name", "% Daily", "% 5D", "% Off 52w-Hi", "% YTD", "RS-SPY"]
+HEATMAP_COLS = ["Ticker", "Name", "% Daily", "% 5D", "% Off 52w-Hi", "% YTD", "RS-SPY", "Trend 30d"]
 SUB_MARKET = [
     ("IVE", "S&P 500 Large Cap Value"),
     ("IJS", "S&P 600 Small Cap Value"),
@@ -108,9 +108,14 @@ def _heatmap_block(ws, start_row: int, title: str, rows: list[tuple[str, str]]) 
             cell.number_format = S.PCT_FMT
             cell.alignment = S.RIGHT
             cell.border = S.BOX
+        # Trend sparkline cell (filled by populator)
+        sp_cell = ws.cell(row=r, column=16)
+        sp_cell.font = Font(name="Consolas", size=11)
+        sp_cell.alignment = S.LEFT
+        sp_cell.border = S.BOX
         r += 1
 
-    # heatmap color scale on the % columns
+    # heatmap color scale on the % columns only (K..O), not the sparkline (P)
     rng = f"K{r - len(rows)}:O{r - 1}"
     rule = ColorScaleRule(
         start_type="num", start_value=-0.05, start_color="EF4444",
@@ -129,7 +134,7 @@ def build_market_daily(out_path: Path) -> Path:
     ws.title = "Daily Plan"
     _set_header(ws, 'Daily Market Plan – "If you fail to plan, you are planning to fail" – Benjamin Franklin', 16)
     _col_widths(ws, {1: 28, 2: 14, 3: 14, 4: 14, 5: 14, 6: 14, 7: 14, 8: 2,
-                     9: 8, 10: 32, 11: 10, 12: 10, 13: 12, 14: 10, 15: 10, 16: 10})
+                     9: 8, 10: 32, 11: 10, 12: 10, 13: 12, 14: 10, 15: 10, 16: 24})
 
     # Left column blocks
     r = 3
@@ -246,11 +251,11 @@ def build_market_daily(out_path: Path) -> Path:
 
     # --- Watchlist Summary (aggregates Cover tiles from every Ticker_*.xlsx) ---
     sws = wb.create_sheet("Summary")
-    _set_header(sws, "Watchlist Summary — aggregates Cover sheet from every Ticker workbook", 13)
-    _col_widths(sws, {1: 10, 2: 24, 3: 16, 4: 12, 5: 12, 6: 10, 7: 10, 8: 10, 9: 10, 10: 12, 11: 14, 12: 10, 13: 16})
+    _set_header(sws, "Watchlist Summary — aggregates Cover sheet from every Ticker workbook", 14)
+    _col_widths(sws, {1: 10, 2: 24, 3: 16, 4: 12, 5: 12, 6: 10, 7: 10, 8: 10, 9: 10, 10: 12, 11: 14, 12: 10, 13: 16, 14: 24})
     headers = ["Ticker", "Name", "Sector", "Price", "Fair Value",
                "Upside %", "MoS %", "Quality", "EDF", "Altman Z",
-               "Next Earnings", "3M EPS Rev", "Source File"]
+               "Next Earnings", "3M EPS Rev", "Source File", "Trend 30d"]
     for i, h in enumerate(headers):
         c = sws.cell(row=3, column=i + 1, value=h)
         c.fill = S.SUBSECTION_FILL
@@ -258,7 +263,7 @@ def build_market_daily(out_path: Path) -> Path:
         c.alignment = S.CENTER
         c.border = S.BOX
     for r in range(4, 54):
-        for c in range(1, 14):
+        for c in range(1, 15):
             sws.cell(row=r, column=c).border = S.BOX
         sws.cell(row=r, column=4).number_format = S.USD_FMT
         sws.cell(row=r, column=5).number_format = S.USD_FMT
@@ -268,6 +273,7 @@ def build_market_daily(out_path: Path) -> Path:
         sws.cell(row=r, column=9).number_format = S.PCT_FMT
         sws.cell(row=r, column=10).number_format = S.NUM_FMT
         sws.cell(row=r, column=12).number_format = S.PCT_FMT
+        sws.cell(row=r, column=14).font = Font(name="Consolas", size=11)
 
     # Conditional formatting on upside col (F), MoS col (G), and Quality (H)
     rule_pos = ColorScaleRule(
@@ -328,13 +334,15 @@ def build_market_daily(out_path: Path) -> Path:
     _col_widths(pws, {1: 10, 2: 24, 3: 12, 4: 12, 5: 12, 6: 14, 7: 14, 8: 12, 9: 12})
 
     headers = ["Ticker", "Name", "Shares", "Cost Basis", "Current Price",
-               "Current Value", "Gain/Loss $", "Gain/Loss %", "Weight %"]
+               "Current Value", "Gain/Loss $", "Gain/Loss %", "Weight %",
+               "Trend 30d"]
     for i, h in enumerate(headers):
         c = pws.cell(row=3, column=i + 1, value=h)
         c.fill = S.SUBSECTION_FILL
         c.font = S.LABEL_FONT
         c.alignment = S.CENTER
         c.border = S.BOX
+    pws.column_dimensions[get_column_letter(10)].width = 24
     # 25 rows for positions
     for r in range(4, 29):
         for c in (1, 2, 3, 4):
@@ -346,8 +354,9 @@ def build_market_daily(out_path: Path) -> Path:
         pws.cell(row=r, column=7).number_format = S.USD_FMT
         pws.cell(row=r, column=8).number_format = S.PCT_FMT
         pws.cell(row=r, column=9).number_format = S.PCT_FMT
-        for c in range(1, 10):
+        for c in range(1, 11):
             pws.cell(row=r, column=c).border = S.BOX
+        pws.cell(row=r, column=10).font = Font(name="Consolas", size=11)
 
     # Totals row
     tot_row = 30

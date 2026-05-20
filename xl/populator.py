@@ -17,6 +17,33 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 _BOLD_FONT = Font(name="Calibri", size=10, bold=True)
+_SPARKLINE_FONT = Font(name="Consolas", size=11)
+_BLOCK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def block_sparkline(values, width: int = 20) -> str:
+    """Render a list of numbers as a Unicode-block sparkline string.
+    Adapts to `width` characters; auto-scales between min and max."""
+    if values is None:
+        return ""
+    vals = [float(v) for v in values
+            if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    if len(vals) < 2:
+        return ""
+    # Resample if more values than width
+    if len(vals) > width:
+        step = len(vals) / width
+        sampled = [vals[int(i * step)] for i in range(width)]
+    else:
+        sampled = vals
+    lo, hi = min(sampled), max(sampled)
+    if hi == lo:
+        return _BLOCK_CHARS[3] * len(sampled)
+    out = []
+    for v in sampled:
+        idx = int((v - lo) / (hi - lo) * (len(_BLOCK_CHARS) - 1))
+        out.append(_BLOCK_CHARS[idx])
+    return "".join(out)
 
 import config
 from compute import altman, capm, dcf, hillegeist, kmv, merton, multiples, ratios, scoring, signals
@@ -1193,6 +1220,9 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
             five_d = signals.pct_change(close, 5)
             ws.cell(row=row, column=15,
                     value=(five_d - spy_5d) if five_d is not None else None)
+            # 30-day Unicode sparkline
+            last30 = close.tail(30).tolist()
+            ws.cell(row=row, column=16, value=block_sparkline(last30, width=20))
 
     # Section 1 booleans
     if spy_close is not None and not spy_close.empty:
@@ -1325,6 +1355,17 @@ def _populate_summary(wb) -> None:
         summary.cell(row=r, column=11, value=row["next_earnings"])
         summary.cell(row=r, column=12, value=_to_number(row["eps_rev_3m"]))
         summary.cell(row=r, column=13, value=row["source"])
+        # 30-day Unicode sparkline (uses cached price data, no fresh fetch)
+        try:
+            px = yfc.prices(row["ticker"], period="3mo")
+            close = _close_series(px)
+            if close is not None and not close.empty:
+                cell = summary.cell(row=r, column=14,
+                                    value=block_sparkline(close.tail(30).tolist(),
+                                                          width=20))
+                cell.font = _SPARKLINE_FONT
+        except Exception:
+            pass
 
 
 def _populate_earnings_calendar(wb, force: bool = False) -> None:
@@ -1527,6 +1568,13 @@ def _populate_positions(wb, force: bool = False) -> None:
             if p["shares"] * p["cost"] > 0:
                 ws.cell(row=p["row"], column=8,
                         value=gain / (p["shares"] * p["cost"]))
+            # 30-day sparkline at col 10
+            close = price_data.get(p["ticker"])
+            if close is not None:
+                sp_cell = ws.cell(row=p["row"], column=10,
+                                  value=block_sparkline(close.tail(30).tolist(),
+                                                        width=20))
+                sp_cell.font = _SPARKLINE_FONT
 
     # Write weights and total
     if total_value > 0:

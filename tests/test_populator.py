@@ -160,6 +160,37 @@ def test_red_flags_formatting():
     assert "Critical Debt Load" in out[0]  # worst first
 
 
+def test_block_sparkline_basic():
+    # All same → middle block
+    assert all(c == "▄" for c in populator.block_sparkline([5, 5, 5, 5]))
+
+
+def test_block_sparkline_monotonic_rises():
+    s = populator.block_sparkline([1, 2, 3, 4, 5, 6, 7, 8])
+    # First char should be lowest block, last char should be highest
+    assert s[0] == "▁"
+    assert s[-1] == "█"
+
+
+def test_block_sparkline_empty_input():
+    assert populator.block_sparkline([]) == ""
+    assert populator.block_sparkline(None) == ""
+    assert populator.block_sparkline([42]) == ""  # need at least 2 values
+
+
+def test_block_sparkline_handles_nans():
+    s = populator.block_sparkline([1, float("nan"), 5, 10])
+    assert len(s) == 3  # nan dropped
+
+
+def test_block_sparkline_resamples_when_longer_than_width():
+    long_input = list(range(100))
+    out = populator.block_sparkline(long_input, width=20)
+    assert len(out) == 20
+    assert out[0] == "▁"
+    assert out[-1] == "█"
+
+
 def test_template_has_analysis_charts(template_path):
     wb = load_workbook(template_path)
     ws = wb["Analysis"]
