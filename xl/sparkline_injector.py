@@ -105,43 +105,23 @@ def _inject_into_sheet_xml(sheet_xml_bytes: bytes,
                            sparklines: list[dict]) -> bytes:
     """Return modified worksheet XML with an extLst → sparklineGroups appended.
 
-    Also ensures the worksheet root declares xmlns:r, xmlns:mc, and
-    mc:Ignorable="x14" — without these, Excel rejects the file as
-    corrupt when it encounters the sparkline extension.
+    Matches xlsxwriter's pattern exactly:
+    - Worksheet root: left untouched (openpyxl already produces a valid root).
+    - <ext>: declares xmlns:x14 inline.
+    - <x14:sparklineGroups>: declares xmlns:xm inline.
+
+    Critical: we *do not* iterate root.children while appending — lxml's
+    append() moves elements, which silently corrupts the iteration order
+    when used together.
     """
     parser = etree.XMLParser(remove_blank_text=False)
     root = etree.fromstring(sheet_xml_bytes, parser)
 
-    # Reconstruct the worksheet root with required namespace declarations.
-    # lxml doesn't let us mutate the root's nsmap in place, so we build a
-    # new root, copy all attrs/children, and replace.
-    main_ns = NSMAP_PAIRS = {
-        None: _NS_MAIN,
-        "r": _NS_REL,
-        "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
-        "x14": _NS_X14,
-        "xr": "http://schemas.microsoft.com/office/spreadsheetml/2014/revision",
-    }
-    new_root = etree.Element(
-        f"{{{_NS_MAIN}}}worksheet",
-        nsmap=NSMAP_PAIRS,
-    )
-    # Carry over attributes (rare on the worksheet root but possible)
-    for k, v in root.attrib.items():
-        new_root.set(k, v)
-    new_root.set(
-        "{http://schemas.openxmlformats.org/markup-compatibility/2006}Ignorable",
-        "x14ac xr xr2 xr3",
-    )
-    # Copy children
-    for child in root:
-        new_root.append(child)
-    root = new_root
-
-    # Build the new extension element
+    # Build the new extension element with namespaces declared inline.
     ext = etree.SubElement(
         _ensure_extLst(root),
         f"{{{_NS_MAIN}}}ext",
+        nsmap={"x14": _NS_X14},
     )
     ext.set("uri", _SPARKLINE_EXT_URI)
 
@@ -153,7 +133,8 @@ def _inject_into_sheet_xml(sheet_xml_bytes: bytes,
     spark_group.set("displayEmptyCellsAs", "gap")
     spark_group.set("type", "line")
 
-    # Series color: deep blue (matches our SECTION_FILL palette tone)
+    # Color attributes — order matches the OOXML XSD definition for
+    # CT_SparklineGroup. Excel can be strict about element order.
     color_series = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorSeries")
     color_series.set("rgb", "FF1F4E79")
     color_negative = etree.SubElement(spark_group, f"{{{_NS_X14}}}colorNegative")
@@ -179,9 +160,8 @@ def _inject_into_sheet_xml(sheet_xml_bytes: bytes,
         sqref_el = etree.SubElement(sl, f"{{{_NS_XM}}}sqref")
         sqref_el.text = sp["target_cell"]
 
-    # Write XML declaration manually with double-quoted attributes.
-    # lxml's xml_declaration=True writes single quotes, which Excel's
-    # XmlLite parser rejects with HRESULT 0x808c0002.
+    # Write XML declaration manually — lxml emits single quotes there
+    # which Excel's XmlLite parser rejects with HRESULT 0x808c0002.
     body = etree.tostring(root, xml_declaration=False, encoding="UTF-8")
     return (
         b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
