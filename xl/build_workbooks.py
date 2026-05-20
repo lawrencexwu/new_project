@@ -348,38 +348,39 @@ def build_ticker_template(out_path: Path) -> Path:
     _col_widths(fws, {1: 40})
     for c in range(2, 14):
         fws.column_dimensions[get_column_letter(c)].width = 14
+    def _stmt_block(start_row, section_label, labels):
+        r = _section(fws, start_row, 1, section_label, span=14)
+        # Period-date header row (filled by populator at refresh time)
+        fws.cell(row=r, column=1, value="Period").font = S.MUTED_FONT
+        for c in range(2, 14):
+            cell = fws.cell(row=r, column=c)
+            cell.fill = S.SUBSECTION_FILL
+            cell.font = S.LABEL_FONT
+            cell.alignment = S.CENTER
+        r += 1
+        for label in labels:
+            fws.cell(row=r, column=1, value=label).font = S.LABEL_FONT
+            for c in range(2, 14):
+                fws.cell(row=r, column=c).number_format = S.NUM_FMT
+            r += 1
+        return r + 1
+
     rf = 3
-    rf = _section(fws, rf, 1, "Income Statement (Quarterly)", span=14)
-    for label in ("Revenue", "Cost of Revenue", "Gross Profit", "SG&A", "R&D",
-                  "Depreciation & Amortization", "Other Opex",
-                  "Operating Income (EBIT)", "Interest Expense",
-                  "Other Non-Op Income", "Pretax Income",
-                  "Provision for Taxes", "Net Income"):
-        fws.cell(row=rf, column=1, value=label).font = S.LABEL_FONT
-        for c in range(2, 14):
-            fws.cell(row=rf, column=c).number_format = S.NUM_FMT
-        rf += 1
-
-    rf += 1
-    rf = _section(fws, rf, 1, "Balance Sheet (Quarterly)", span=14)
-    for label in ("Cash & ST Investments", "Receivables", "Inventory",
-                  "Current Assets", "Total Assets",
-                  "Current Liabilities", "Long-Term Debt", "Total Liabilities",
-                  "Retained Earnings", "Total Equity", "Minority Interest"):
-        fws.cell(row=rf, column=1, value=label).font = S.LABEL_FONT
-        for c in range(2, 14):
-            fws.cell(row=rf, column=c).number_format = S.NUM_FMT
-        rf += 1
-
-    rf += 1
-    rf = _section(fws, rf, 1, "Cash Flow (Quarterly)", span=14)
-    for label in ("Operating Cash Flow", "Capital Expenditures",
-                  "Free Cash Flow", "Dividends Paid", "Share Buybacks",
-                  "Net Debt Issued/Repaid"):
-        fws.cell(row=rf, column=1, value=label).font = S.LABEL_FONT
-        for c in range(2, 14):
-            fws.cell(row=rf, column=c).number_format = S.NUM_FMT
-        rf += 1
+    rf = _stmt_block(rf, "Income Statement (Quarterly)", [
+        "Revenue", "Cost of Revenue", "Gross Profit", "SG&A", "R&D",
+        "Depreciation & Amortization", "Other Opex",
+        "Operating Income (EBIT)", "Interest Expense",
+        "Other Non-Op Income", "Pretax Income",
+        "Provision for Taxes", "Net Income"])
+    rf = _stmt_block(rf, "Balance Sheet (Quarterly)", [
+        "Cash & ST Investments", "Receivables", "Inventory",
+        "Current Assets", "Total Assets",
+        "Current Liabilities", "Long-Term Debt", "Total Liabilities",
+        "Retained Earnings", "Total Equity", "Minority Interest"])
+    rf = _stmt_block(rf, "Cash Flow (Quarterly)", [
+        "Operating Cash Flow", "Capital Expenditures",
+        "Free Cash Flow", "Dividends Paid", "Share Buybacks",
+        "Net Debt Issued/Repaid"])
 
     # --- Analysis ---
     ws_a = wb.create_sheet("Analysis")

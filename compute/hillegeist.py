@@ -28,5 +28,11 @@ def solve(inp: HillegeistInputs) -> HillegeistOutputs:
     x3 = inp.ebit / ta
     x4 = inp.market_value_equity / tl
     score = 3.835 + 1.13 * x1 + 0.005 * x2 + 0.269 * x3 + 0.399 * x4
-    prob = 1 / (1 + math.exp(score))
+    # 1 / (1 + e^score): large positive score → ~0; large negative → ~1.
+    if score > 50:
+        prob = 0.0
+    elif score < -50:
+        prob = 1.0
+    else:
+        prob = 1 / (1 + math.exp(score))
     return HillegeistOutputs(score=score, default_prob=prob)

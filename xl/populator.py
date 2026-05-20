@@ -1,0 +1,988 @@
+"""Populate workbook cells with live data. Uses openpyxl so it runs headless.
+
+The xlwings macros in xl/macros.py are thin wrappers that call these functions.
+"""
+from __future__ import annotations
+
+import math
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
+
+import config
+from compute import altman, capm, dcf, hillegeist, kmv, merton, multiples, ratios, scoring, signals
+from data import fred_client as fc
+from data import yfinance_client as yfc
+
+
+ASSET_LIGHT_INDUSTRY_HINTS = (
+    "software", "saas", "internet", "advertising", "marketing", "consulting",
+    "media", "broadcast", "publishing", "financial data", "asset management",
+    "investment", "broker", "exchange", "insurance", "bank",
+)
+
+
+# -----------------------------------------------------------
+# Generic helpers
+# -----------------------------------------------------------
+
+_DEFAULT_LABEL_COLS = (1, 4, 7, 9, 10)
+
+
+def find_label_row(ws: Worksheet, label: str, col: int | None = None,
+                   max_row: int = 300) -> int | None:
+    """Find row of an exact label match. When col is None, search the standard
+    set of label columns (1, 4, 7, 9, 10) and return on first hit.
+    Returns the row only; callers wanting the column should use find_label_cell."""
+    cell = find_label_cell(ws, label, col=col, max_row=max_row)
+    return cell[0] if cell else None
+
+
+def find_label_cell(ws: Worksheet, label: str, col: int | None = None,
+                    max_row: int = 300) -> tuple[int, int] | None:
+    """Return (row, col) of the first cell whose value equals label."""
+    cols = (col,) if col is not None else _DEFAULT_LABEL_COLS
+    for c in cols:
+        for row in range(1, max_row + 1):
+            v = ws.cell(row=row, column=c).value
+            if v == label:
+                return (row, c)
+    return None
+
+
+def find_section_anchor(ws: Worksheet, section_label: str,
+                        cols: tuple[int, ...] = (1, 4, 9)) -> int | None:
+    for col in cols:
+        r = find_label_row(ws, section_label, col=col)
+        if r is not None:
+            return r
+    return None
+
+
+def set_value(ws: Worksheet, row: int, col: int, value: Any) -> None:
+    if row is None or col is None:
+        return
+    cell = ws.cell(row=row, column=col)
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        cell.value = None
+        return
+    cell.value = value
+
+
+def write_label_value(ws: Worksheet, label: str, value: Any,
+                      label_col: int | None = None,
+                      value_col_offset: int = 1) -> None:
+    """Write `value` next to a label. Searches all standard label columns
+    when label_col is None — supports left-block and side-block layouts."""
+    found = find_label_cell(ws, label, col=label_col)
+    if found is None:
+        return
+    row, col = found
+    set_value(ws, row, col + value_col_offset, value)
+
+
+# -----------------------------------------------------------
+# yfinance line-item label mapping
+# -----------------------------------------------------------
+
+_YF_LINE_MAP = {
+    # Income statement
+    "Revenue": ("Total Revenue", "Operating Revenue", "TotalRevenue"),
+    "Cost of Revenue": ("Cost Of Revenue", "Reconciled Cost Of Revenue"),
+    "Gross Profit": ("Gross Profit",),
+    "SG&A": ("Selling General And Administration", "Selling General And Administrative"),
+    "R&D": ("Research And Development",),
+    "Depreciation & Amortization": ("Reconciled Depreciation", "Depreciation And Amortization"),
+    "Other Opex": ("Other Operating Expenses",),
+    "Operating Income (EBIT)": ("Operating Income", "EBIT"),
+    "Interest Expense": ("Interest Expense", "Interest Expense Non Operating"),
+    "Other Non-Op Income": ("Other Income Expense", "Non Operating Income"),
+    "Pretax Income": ("Pretax Income", "Income Before Tax"),
+    "Provision for Taxes": ("Tax Provision", "Income Tax Expense"),
+    "Net Income": ("Net Income", "Net Income Common Stockholders"),
+    # Balance sheet
+    "Cash & ST Investments": ("Cash Cash Equivalents And Short Term Investments",
+                              "Cash And Cash Equivalents"),
+    "Receivables": ("Accounts Receivable", "Receivables"),
+    "Inventory": ("Inventory",),
+    "Current Assets": ("Current Assets", "Total Current Assets"),
+    "Total Assets": ("Total Assets",),
+    "Current Liabilities": ("Current Liabilities", "Total Current Liabilities"),
+    "Long-Term Debt": ("Long Term Debt", "Long Term Debt And Capital Lease Obligation"),
+    "Total Liabilities": ("Total Liabilities Net Minority Interest", "Total Liab"),
+    "Retained Earnings": ("Retained Earnings",),
+    "Total Equity": ("Common Stock Equity", "Total Equity Gross Minority Interest"),
+    "Minority Interest": ("Minority Interest",),
+    # Cash flow
+    "Operating Cash Flow": ("Operating Cash Flow", "Cash Flow From Continuing Operating Activities"),
+    "Capital Expenditures": ("Capital Expenditure",),
+    "Free Cash Flow": ("Free Cash Flow",),
+    "Dividends Paid": ("Cash Dividends Paid", "Common Stock Dividend Paid"),
+    "Share Buybacks": ("Repurchase Of Capital Stock", "Common Stock Issuance"),
+    "Net Debt Issued/Repaid": ("Net Issuance Payments Of Debt",),
+}
+
+
+def _row_from_yf(df: pd.DataFrame, label: str) -> pd.Series | None:
+    """yfinance returns line items as index, dates as columns. Find the row."""
+    if df is None or df.empty:
+        return None
+    if "line" in df.columns:
+        index = df["line"].astype(str)
+    else:
+        index = pd.Series(df.index.astype(str), index=df.index)
+    candidates = _YF_LINE_MAP.get(label, (label,))
+    for c in candidates:
+        matches = index[index.str.casefold() == c.casefold()]
+        if not matches.empty:
+            i = matches.index[0]
+            if "line" in df.columns:
+                row = df.loc[i].drop("line", errors="ignore")
+            else:
+                row = df.loc[i]
+            return row
+    return None
+
+
+def _quarter_columns(df: pd.DataFrame, n: int = 11) -> list:
+    """Return the last n columns (period dates) ordered oldest→newest."""
+    if df is None or df.empty:
+        return []
+    cols = list(df.columns)
+    if "line" in cols:
+        cols.remove("line")
+    try:
+        cols_sorted = sorted(cols, key=lambda c: pd.to_datetime(c, errors="coerce") or pd.NaT)
+    except TypeError:
+        cols_sorted = cols
+    return cols_sorted[-n:]
+
+
+def _latest_value(df: pd.DataFrame, label: str) -> float | None:
+    row = _row_from_yf(df, label)
+    if row is None or row.empty:
+        return None
+    row = row.dropna()
+    if row.empty:
+        return None
+    try:
+        return float(row.iloc[-1])
+    except (TypeError, ValueError):
+        return None
+
+
+# -----------------------------------------------------------
+# Ticker workbook populator
+# -----------------------------------------------------------
+
+def populate_ticker(template_path: Path, output_path: Path, ticker: str,
+                    force: bool = False) -> Path:
+    template_path = Path(template_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not output_path.exists() or template_path.resolve() != output_path.resolve():
+        shutil.copy(template_path, output_path)
+
+    wb = load_workbook(output_path)
+    ticker = ticker.upper()
+
+    info = yfc.info(ticker, force=force)
+    industry = (info.get("industry") or "").lower()
+    asset_light = any(h in industry for h in ASSET_LIGHT_INDUSTRY_HINTS)
+
+    px_df = yfc.prices(ticker, period="10y", force=force)
+    is_q = yfc.income_statement(ticker, quarterly=True, force=force)
+    bs_q = yfc.balance_sheet(ticker, quarterly=True, force=force)
+    cf_q = yfc.cashflow(ticker, quarterly=True, force=force)
+
+    rf = fc.risk_free_10y()
+    mrp = 0.05  # default market risk premium
+    beta_val = capm.beta(ticker)
+
+    market = _populate_market(wb, ticker, info, px_df, rf, beta_val, mrp)
+    _populate_fin_stat(wb, is_q, bs_q, cf_q)
+    analysis_results = _populate_analysis(wb, is_q, bs_q, cf_q, asset_light=asset_light)
+    valuation_results = _populate_valuation(
+        wb, ticker, is_q, bs_q, cf_q, px_df, market,
+        force=force,
+    )
+    credit_results = _populate_credit(wb, market, is_q, bs_q, px_df)
+
+    _populate_cover(
+        wb,
+        ticker=ticker,
+        info=info,
+        market=market,
+        analysis=analysis_results,
+        valuation=valuation_results,
+        credit=credit_results,
+    )
+
+    wb.save(output_path)
+    return output_path
+
+
+# -----------------------------------------------------------
+# Section: Market & Macro
+# -----------------------------------------------------------
+
+def _populate_market(wb, ticker: str, info: dict, px_df,
+                     rf: float | None, beta_val: float | None,
+                     mrp: float) -> dict:
+    ws = wb["Market"]
+    result: dict[str, Any] = {"ticker": ticker}
+
+    price = None
+    if px_df is not None and not px_df.empty:
+        price = float(px_df["Close"].iloc[-1])
+        close = px_df.set_index(pd.to_datetime(px_df["date"]))["Close"].astype(float)
+    else:
+        close = None
+
+    result["price"] = price
+    result["close"] = close
+
+    shares = _safe_float(info.get("sharesOutstanding"))
+    div_yield = _safe_float(info.get("dividendYield"))
+    if div_yield is not None and div_yield > 1.0:
+        div_yield = div_yield / 100.0  # yfinance occasionally returns percentage points
+    market_cap = price * shares if (price and shares) else _safe_float(info.get("marketCap"))
+    fifty_two_w_high = _safe_float(info.get("fiftyTwoWeekHigh"))
+    fifty_two_w_low = _safe_float(info.get("fiftyTwoWeekLow"))
+
+    write_label_value(ws, "Price", price)
+    write_label_value(ws, "Shares Outstanding", shares)
+    write_label_value(ws, "Market Cap", market_cap)
+    write_label_value(ws, "Dividend Yield", div_yield)
+    write_label_value(ws, "52w High", fifty_two_w_high)
+    write_label_value(ws, "52w Low", fifty_two_w_low)
+
+    hv30 = yfc.historical_vol(ticker, 30)
+    hv90 = yfc.historical_vol(ticker, 90)
+    hv365 = yfc.historical_vol(ticker, 365)
+    atm_iv = yfc.options_atm_iv(ticker)
+    write_label_value(ws, "Historical Vol (30d)", hv30)
+    write_label_value(ws, "Historical Vol (90d)", hv90)
+    write_label_value(ws, "Historical Vol (365d)", hv365)
+    write_label_value(ws, "ATM Implied Vol", atm_iv)
+
+    write_label_value(ws, "Risk-Free Rate (10Y)", rf)
+    write_label_value(ws, "Market Risk Premium", mrp)
+    write_label_value(ws, "Country Risk Premium", 0.0)
+    write_label_value(ws, "Beta", beta_val)
+
+    re = capm.cost_of_equity(rf, beta_val, mrp) if (rf and beta_val) else None
+    write_label_value(ws, "Cost of Equity (Re)", re)
+
+    tax_rate = 0.21
+    write_label_value(ws, "Tax Rate", tax_rate)
+
+    result["shares"] = shares
+    result["market_cap"] = market_cap
+    result["rf"] = rf
+    result["beta"] = beta_val
+    result["mrp"] = mrp
+    result["re"] = re
+    result["tax_rate"] = tax_rate
+    result["equity_vol"] = hv365 or hv90 or hv30
+    return result
+
+
+# -----------------------------------------------------------
+# Section: Financial Statements
+# -----------------------------------------------------------
+
+_IS_LABELS = ["Revenue", "Cost of Revenue", "Gross Profit", "SG&A", "R&D",
+              "Depreciation & Amortization", "Other Opex",
+              "Operating Income (EBIT)", "Interest Expense",
+              "Other Non-Op Income", "Pretax Income",
+              "Provision for Taxes", "Net Income"]
+_BS_LABELS = ["Cash & ST Investments", "Receivables", "Inventory",
+              "Current Assets", "Total Assets",
+              "Current Liabilities", "Long-Term Debt", "Total Liabilities",
+              "Retained Earnings", "Total Equity", "Minority Interest"]
+_CF_LABELS = ["Operating Cash Flow", "Capital Expenditures",
+              "Free Cash Flow", "Dividends Paid", "Share Buybacks",
+              "Net Debt Issued/Repaid"]
+
+
+def _populate_fin_stat(wb, is_q, bs_q, cf_q):
+    ws = wb["Fin Stat"]
+    _write_statement_block(ws, _IS_LABELS, is_q, "Income Statement (Quarterly)")
+    _write_statement_block(ws, _BS_LABELS, bs_q, "Balance Sheet (Quarterly)")
+    _write_statement_block(ws, _CF_LABELS, cf_q, "Cash Flow (Quarterly)")
+
+
+def _write_statement_block(ws: Worksheet, labels: list[str], df: pd.DataFrame,
+                           section: str) -> None:
+    if df is None or df.empty:
+        return
+    quarters = _quarter_columns(df, n=12)
+    section_row = find_label_row(ws, section)
+    if section_row is None:
+        return
+    # Period date headers live in the row directly under the section banner
+    # (template builds this as a labeled "Period" row).
+    header_row = section_row + 1
+    for i, col in enumerate(quarters, start=2):
+        if i > 13:
+            break
+        date = pd.to_datetime(col, errors="coerce")
+        if pd.notna(date):
+            ws.cell(row=header_row, column=i, value=date.strftime("%Y-%m-%d"))
+
+    for label in labels:
+        row = find_label_row(ws, label)
+        if row is None:
+            continue
+        series = _row_from_yf(df, label)
+        if series is None:
+            continue
+        for i, col in enumerate(quarters, start=2):
+            if i > 13:
+                break
+            if col not in series.index:
+                continue
+            val = series[col]
+            if pd.notna(val):
+                ws.cell(row=row, column=i, value=float(val))
+
+
+# -----------------------------------------------------------
+# Section: Analysis
+# -----------------------------------------------------------
+
+def _populate_analysis(wb, is_q, bs_q, cf_q, *, asset_light: bool) -> dict:
+    ws = wb["Analysis"]
+    result: dict[str, Any] = {"scores": {}, "metrics": {}}
+
+    rev = _latest_value(is_q, "Revenue")
+    cor = _latest_value(is_q, "Cost of Revenue")
+    sga = _latest_value(is_q, "SG&A")
+    ebit = _latest_value(is_q, "Operating Income (EBIT)")
+    ni = _latest_value(is_q, "Net Income")
+    int_exp = _latest_value(is_q, "Interest Expense")
+    pretax = _latest_value(is_q, "Pretax Income")
+    ocf = _latest_value(cf_q, "Operating Cash Flow")
+    capex = _latest_value(cf_q, "Capital Expenditures")
+    tot_assets = _latest_value(bs_q, "Total Assets")
+    cur_assets = _latest_value(bs_q, "Current Assets")
+    cur_liab = _latest_value(bs_q, "Current Liabilities")
+    inv = _latest_value(bs_q, "Inventory")
+    recv = _latest_value(bs_q, "Receivables")
+    cash = _latest_value(bs_q, "Cash & ST Investments")
+    lt_debt = _latest_value(bs_q, "Long-Term Debt")
+    tot_liab = _latest_value(bs_q, "Total Liabilities")
+    equity = _latest_value(bs_q, "Total Equity")
+    re_earnings = _latest_value(bs_q, "Retained Earnings")
+
+    total_debt = _safe_sum(lt_debt, _latest_value(bs_q, "Current Liabilities") if False else None)
+    if total_debt is None:
+        total_debt = lt_debt
+
+    fcf = ratios.fcf(ocf, capex)
+    working_capital = _safe_sum(cur_assets, -cur_liab) if (cur_assets is not None and cur_liab is not None) else None
+    net_cash = (cash or 0) - (total_debt or 0) if (cash is not None or total_debt is not None) else None
+
+    metrics: dict[str, float | None] = {
+        "Quality of Earnings (OCF/NI)": ratios.quality_of_earnings(ocf, ni),
+        "EBITDA-like Cash Flow": ocf,
+        "EBITDA-like Cash Flow Margin": ratios.safe_div(ocf, rev),
+        "Free Cash Flow": fcf,
+        "Total Debt": total_debt,
+        "Net Cash – Total Debt": net_cash,
+        "Working Capital": working_capital,
+        "Debt-to-Equity (D/E)": ratios.debt_to_equity(total_debt, equity),
+        "Current Ratio (Liquidity)": ratios.current_ratio(cur_assets, cur_liab),
+        "Quick Ratio (Liquidity)": ratios.quick_ratio(cur_assets, inv, cur_liab),
+        "Inventory Turnover (Efficiency)": ratios.inventory_turnover(cor, inv),
+        "DSO (Efficiency)": ratios.days_sales_outstanding(recv, rev, period_days=90),
+        "WACC": None,  # filled by valuation step
+        "ROIC": ratios.roic(ratios.nopat(ebit, 0.21), _safe_sum(equity, total_debt)),
+        "ROCE": ratios.safe_div(ebit, _safe_sum(equity, total_debt)),
+        "CROCI": ratios.croci(_safe_sum(ebit, _latest_value(is_q, "Depreciation & Amortization")),
+                              _safe_sum(equity, total_debt)),
+        "Debt/FCF": ratios.debt_to_fcf(total_debt, ocf, capex),
+        "Debt/Net OCF": ratios.debt_to_ocf(total_debt, ocf),
+        "Debt/Assets": ratios.debt_to_assets(total_debt, tot_assets),
+        "Interest Cover": ratios.interest_cover(ebit, int_exp),
+        "FCF/Interest": ratios.fcf_to_interest(ocf, capex, int_exp),
+        "Debt/OCF": ratios.debt_to_ocf(total_debt, ocf),
+        "CAPEX % of OCF": ratios.capex_pct_ocf(capex, ocf),
+    }
+
+    tb, ib, om, at, em = ratios.dupont_5step(ni, pretax, ebit, rev, tot_assets, equity)
+    metrics["Tax Burden"] = tb
+    metrics["Interest Burden"] = ib
+    metrics["Operating Margin"] = om
+    metrics["Asset Turnover"] = at
+    metrics["Equity Multiplier"] = em
+    if None not in (tb, ib, om, at, em):
+        metrics["Implied ROE"] = tb * ib * om * at * em
+    else:
+        metrics["Implied ROE"] = None
+
+    score_map = _score_metrics(metrics)
+
+    # Write latest-quarter value into col 2 and score (if any) into col 13
+    for label, value in metrics.items():
+        row = find_label_row(ws, label)
+        if row is None:
+            continue
+        if value is not None:
+            ws.cell(row=row, column=2, value=value)
+        if label in score_map and score_map[label] is not None:
+            ws.cell(row=row, column=13, value=score_map[label])
+
+    # Industry-tag gating: blank out DSO and Inventory Turnover rows for
+    # asset-light businesses.
+    if asset_light:
+        for label in ("DSO (Efficiency)", "Inventory Turnover (Efficiency)"):
+            row = find_label_row(ws, label)
+            if row is None:
+                continue
+            for c in range(2, 14):
+                ws.cell(row=row, column=c).value = None
+            ws.cell(row=row, column=13).value = "N/A"
+
+    result["metrics"] = metrics
+    result["scores"] = score_map
+    result["fcf"] = fcf
+    result["total_debt"] = total_debt
+    result["working_capital"] = working_capital
+    result["retained_earnings"] = re_earnings
+    result["sales"] = rev
+    result["ebit"] = ebit
+    result["net_income"] = ni
+    result["total_assets"] = tot_assets
+    result["total_liabilities"] = tot_liab
+    result["equity"] = equity
+    result["cur_liab"] = cur_liab
+    result["lt_debt"] = lt_debt
+    result["ocf"] = ocf
+    result["capex"] = capex
+    return result
+
+
+def _score_metrics(metrics: dict[str, float | None]) -> dict[str, int | None]:
+    out: dict[str, int | None] = {}
+    out["Quality of Earnings (OCF/NI)"] = scoring.score(
+        metrics["Quality of Earnings (OCF/NI)"], scoring.HIGHER_IS_BETTER)
+    out["EBITDA-like Cash Flow Margin"] = scoring.score(
+        metrics["EBITDA-like Cash Flow Margin"], scoring.HIGHER_IS_BETTER)
+    out["Current Ratio (Liquidity)"] = scoring.score(
+        metrics["Current Ratio (Liquidity)"], scoring.CURRENT_RATIO_BANDS)
+    out["Quick Ratio (Liquidity)"] = scoring.score(
+        metrics["Quick Ratio (Liquidity)"], scoring.CURRENT_RATIO_BANDS)
+    out["Interest Cover"] = scoring.score(
+        metrics["Interest Cover"], scoring.INTEREST_COVER_BANDS)
+    out["DSO (Efficiency)"] = scoring.score(
+        metrics["DSO (Efficiency)"], scoring.DSO_BANDS)
+    out["Debt-to-Equity (D/E)"] = scoring.score(
+        metrics["Debt-to-Equity (D/E)"], scoring.LOWER_IS_BETTER)
+    out["Debt/Assets"] = scoring.score(
+        metrics["Debt/Assets"], scoring.LOWER_IS_BETTER)
+    out["Operating Margin"] = scoring.score(
+        metrics["Operating Margin"], scoring.HIGHER_IS_BETTER)
+    return out
+
+
+# -----------------------------------------------------------
+# Section: Valuation
+# -----------------------------------------------------------
+
+def _populate_valuation(wb, ticker, is_q, bs_q, cf_q, px_df, market: dict,
+                        force: bool = False) -> dict:
+    ws = wb["Valuation"]
+    result: dict[str, Any] = {}
+
+    rev_latest = _latest_value(is_q, "Revenue")
+    ebit_latest = _latest_value(is_q, "Operating Income (EBIT)")
+    da_latest = _latest_value(is_q, "Depreciation & Amortization") or 0.0
+    ocf_latest = _latest_value(cf_q, "Operating Cash Flow")
+    capex_latest = _latest_value(cf_q, "Capital Expenditures")
+    lt_debt = _latest_value(bs_q, "Long-Term Debt") or 0.0
+    cash = _latest_value(bs_q, "Cash & ST Investments") or 0.0
+    minority = _latest_value(bs_q, "Minority Interest") or 0.0
+    shares = market.get("shares")
+    price = market.get("price")
+
+    # TTM approximations from quarterly statements (sum of last 4 quarters)
+    rev_ttm = _ttm(is_q, "Revenue")
+    ebit_ttm = _ttm(is_q, "Operating Income (EBIT)")
+    da_ttm = _ttm(is_q, "Depreciation & Amortization")
+    ocf_ttm = _ttm(cf_q, "Operating Cash Flow")
+    capex_ttm = _ttm(cf_q, "Capital Expenditures")
+    fcf_ttm = ratios.fcf(ocf_ttm, capex_ttm)
+
+    # Forecast revenue from consensus when available
+    rev_est = yfc.revenue_estimate(ticker, force=force)
+    eps_est = yfc.earnings_estimate(ticker, force=force)
+
+    rev_growth_y1, rev_growth_y2 = _consensus_growth(rev_est, rev_ttm)
+    forecast_growths = _fade_growth(rev_growth_y1, rev_growth_y2, years=5, terminal=0.025)
+
+    ebit_margin = ratios.safe_div(ebit_ttm, rev_ttm) or 0.10
+    da_pct_rev = ratios.safe_div(da_ttm, rev_ttm) or 0.05
+    capex_pct_rev = ratios.safe_div(abs(capex_ttm) if capex_ttm else None, rev_ttm) or 0.05
+    nwc_pct_change_rev = 0.10
+
+    revenues = []
+    last_rev = rev_ttm or 0.0
+    for g in forecast_growths:
+        last_rev = last_rev * (1 + g)
+        revenues.append(last_rev)
+
+    ebits = [r * ebit_margin for r in revenues]
+    da_s = [r * da_pct_rev for r in revenues]
+    capexes = [r * capex_pct_rev for r in revenues]
+    rev_changes = [revenues[0] - (rev_ttm or 0.0)] + [
+        revenues[i] - revenues[i - 1] for i in range(1, len(revenues))
+    ]
+    nwc_changes = [d * nwc_pct_change_rev for d in rev_changes]
+
+    tax_rate = market.get("tax_rate", 0.21)
+    ufcf = []
+    ebitda_forecast = []
+    for i in range(len(revenues)):
+        nopat_i = ebits[i] * (1 - tax_rate)
+        ufcf_i = nopat_i + da_s[i] - capexes[i] - nwc_changes[i]
+        ufcf.append(ufcf_i)
+        ebitda_forecast.append(ebits[i] + da_s[i])
+
+    # Write forecast columns Y+1..Y+5 (cols 2..6) and Terminal (col 7)
+    forecast_row_labels = {
+        "Revenue": revenues,
+        "EBIT": ebits,
+        "EBITDA": ebitda_forecast,
+        "Tax": [ebits[i] * tax_rate for i in range(len(ebits))],
+        "Unlevered Net Income": [ebits[i] * (1 - tax_rate) for i in range(len(ebits))],
+        "+ D&A": da_s,
+        "− CAPEX": [-c for c in capexes],
+        "− Δ NWC": [-d for d in nwc_changes],
+        "Unlevered FCF": ufcf,
+    }
+    for label, series in forecast_row_labels.items():
+        row = find_label_row(ws, label)
+        if row is None:
+            continue
+        for i, v in enumerate(series):
+            ws.cell(row=row, column=2 + i, value=v)
+
+    # Sensitivity grids
+    rates = config.get("discount_rates", [0.03, 0.04, 0.05])
+    mults = config.get("terminal_multiples", [8.0, 10.0, 12.0])
+    net_debt = (lt_debt or 0.0) - (cash or 0.0)
+    terminal_ebitda = ebitda_forecast[-1] if ebitda_forecast else 0.0
+
+    grids = dcf.sensitivity_grid(
+        ufcf=ufcf, terminal_ebitda=terminal_ebitda,
+        discount_rates=rates, terminal_multiples=mults,
+        net_debt=net_debt, minority=minority,
+        shares=shares or 0.0, current_price=price or 0.0,
+    )
+
+    price_section_row = find_label_row(
+        ws, "Sensitivity: Price per Share (rows = discount rate, cols = terminal multiple)"
+    )
+    if price_section_row:
+        for r_idx, rate in enumerate(rates):
+            for c_idx, mult in enumerate(mults):
+                v = grids["price"].loc[rate, mult]
+                if pd.notna(v):
+                    ws.cell(row=price_section_row + 2 + r_idx,
+                            column=2 + c_idx, value=float(v))
+
+    upside_section_row = find_label_row(ws, "Sensitivity: Implied Upside %")
+    if upside_section_row:
+        for r_idx, rate in enumerate(rates):
+            for c_idx, mult in enumerate(mults):
+                v = grids["upside"].loc[rate, mult]
+                if pd.notna(v):
+                    ws.cell(row=upside_section_row + 2 + r_idx,
+                            column=2 + c_idx, value=float(v))
+
+    # Base-case point estimate uses the middle row/col of the grids
+    mid_rate = rates[len(rates) // 2]
+    mid_mult = mults[len(mults) // 2]
+    base_price = grids["price"].loc[mid_rate, mid_mult]
+    if pd.isna(base_price):
+        base_price = None
+    else:
+        base_price = float(base_price)
+
+    write_label_value(ws, "WACC", mid_rate)
+    write_label_value(ws, "Net Debt", net_debt)
+    write_label_value(ws, "Minority Interest", minority)
+    write_label_value(ws, "Shares Outstanding", shares)
+    write_label_value(ws, "Current Price", price)
+
+    market_cap_now = (price or 0) * (shares or 0)
+    implied_g = dcf.reverse_dcf(market_cap_now, fcf_ttm or 0.0, mid_rate)
+    if implied_g is not None:
+        write_label_value(ws, "Implied Growth (current price)", implied_g)
+    mos = dcf.margin_of_safety(base_price, price) if (base_price and price) else None
+    if mos is not None:
+        write_label_value(ws, "Margin of Safety", mos)
+
+    result["fair_value"] = base_price
+    result["price"] = price
+    result["upside"] = (base_price / price - 1) if (base_price and price) else None
+    result["mos"] = mos
+    result["implied_growth"] = implied_g
+    result["net_debt"] = net_debt
+    result["minority"] = minority
+    result["fcf_ttm"] = fcf_ttm
+    result["ufcf_forecast"] = ufcf
+    result["wacc"] = mid_rate
+    return result
+
+
+def _consensus_growth(rev_est_df, current_rev) -> tuple[float, float]:
+    """Pull next-year and year-after revenue estimates; default to 0.05."""
+    if rev_est_df is None or rev_est_df.empty or current_rev in (None, 0):
+        return 0.05, 0.04
+    df = rev_est_df.copy()
+    candidate_cols = [c for c in df.columns if "avg" in str(c).lower()]
+    if not candidate_cols:
+        return 0.05, 0.04
+    col = candidate_cols[0]
+    periods = df.iloc[:, 0].astype(str).str.lower().tolist()
+    growths = []
+    for label, target in (("+1y", "+1y"), ("0y", "0y")):
+        pass
+
+    g_y1 = g_y2 = None
+    for i, p in enumerate(periods):
+        v = df.iloc[i][col]
+        if pd.isna(v):
+            continue
+        if "+1y" in p and g_y2 is None:
+            g_y2 = float(v) / float(current_rev) - 1
+        if ("0y" in p or "+0y" in p) and g_y1 is None:
+            g_y1 = float(v) / float(current_rev) - 1
+    g_y1 = g_y1 if g_y1 is not None else 0.05
+    g_y2 = g_y2 if g_y2 is not None else g_y1 * 0.8
+    return g_y1, g_y2
+
+
+def _fade_growth(g1: float, g2: float, years: int, terminal: float) -> list[float]:
+    """Linear fade from g2 down to terminal over remaining years."""
+    growths = [g1, g2]
+    remaining = years - 2
+    if remaining <= 0:
+        return growths[:years]
+    step = (g2 - terminal) / (remaining + 1)
+    for k in range(remaining):
+        growths.append(g2 - step * (k + 1))
+    return growths
+
+
+def _ttm(df, label: str) -> float | None:
+    row = _row_from_yf(df, label)
+    if row is None:
+        return None
+    vals = pd.to_numeric(row, errors="coerce").dropna()
+    if vals.empty:
+        return None
+    last4 = vals.iloc[-4:]
+    return float(last4.sum())
+
+
+# -----------------------------------------------------------
+# Section: Credit
+# -----------------------------------------------------------
+
+def _populate_credit(wb, market: dict, is_q, bs_q, px_df) -> dict:
+    ws = wb["Credit"]
+    result: dict[str, Any] = {}
+
+    equity_value = market.get("market_cap") or 0.0
+    sigma_e = market.get("equity_vol") or 0.5
+    rf = market.get("rf") or 0.04
+    lt_debt = _latest_value(bs_q, "Long-Term Debt") or 0.0
+    st_debt = _latest_value(bs_q, "Current Liabilities") or 0.0
+    tot_liab = _latest_value(bs_q, "Total Liabilities") or (lt_debt + st_debt)
+
+    write_label_value(ws, "Equity Value (E)", equity_value)
+    write_label_value(ws, "Equity Volatility (σE)", sigma_e)
+    write_label_value(ws, "Risk-Free Rate", rf)
+    write_label_value(ws, "Long-Term Liabilities", lt_debt)
+    write_label_value(ws, "Short-Term Liabilities", st_debt)
+    write_label_value(ws, "Horizon (years)", 1.0)
+
+    if equity_value > 0 and tot_liab > 0:
+        k_in = kmv.KMVInputs(
+            equity_value=equity_value, equity_vol=sigma_e,
+            risk_free=rf, long_term_liab=lt_debt, short_term_liab=st_debt,
+            horizon_years=1.0,
+        )
+        k = kmv.solve(k_in)
+        write_label_value(ws, "Default Point (0.5·LT + ST)", k.default_point)
+        write_label_value(ws, "Solved Asset Value (A)", k.asset_value)
+        write_label_value(ws, "Solved Asset Volatility (σA)", k.asset_vol)
+        write_label_value(ws, "Distance to Default", k.distance_to_default)
+        write_label_value(ws, "EDF (Expected Default Frequency)", k.edf)
+        write_label_value(ws, "Solver Squared Error", k.squared_error)
+        result["edf"] = k.edf
+        result["dd"] = k.distance_to_default
+
+        m_in = merton.MertonInputs(
+            equity_value=equity_value, equity_vol=sigma_e,
+            total_liab=tot_liab, risk_free=rf, term_years=1.0,
+        )
+        m = merton.solve(m_in)
+        write_label_value(ws, "Merton: Put Value", m.put_value)
+        write_label_value(ws, "Merton: CDS per Year", m.cds_spread_per_year)
+        write_label_value(ws, "Merton: Default Prob (Term)", m.default_prob_to_term)
+        write_label_value(ws, "Merton: Annual Default Prob", m.annual_default_prob)
+        result["merton_annual_pd"] = m.annual_default_prob
+
+    # Altman
+    wc = ((_latest_value(bs_q, "Current Assets") or 0) -
+          (_latest_value(bs_q, "Current Liabilities") or 0))
+    a_in = altman.AltmanInputs(
+        working_capital=wc,
+        retained_earnings=_latest_value(bs_q, "Retained Earnings") or 0,
+        ebit=_latest_value(is_q, "Operating Income (EBIT)") or 0,
+        market_value_equity=equity_value,
+        total_liabilities=tot_liab or 1,
+        sales=_ttm(is_q, "Revenue") or 0,
+        total_assets=_latest_value(bs_q, "Total Assets") or 1,
+    )
+    a = altman.solve(a_in)
+    write_label_value(ws, "X1 = WC / TA", a.x1)
+    write_label_value(ws, "X2 = RE / TA", a.x2)
+    write_label_value(ws, "X3 = EBIT / TA", a.x3)
+    write_label_value(ws, "X4 = MVe / TL", a.x4)
+    write_label_value(ws, "X5 = Sales / TA", a.x5)
+    write_label_value(ws, "Z-Score", a.z_score)
+    write_label_value(ws, "Bucket", a.bucket)
+    result["altman_z"] = a.z_score
+    result["altman_bucket"] = a.bucket
+
+    # Hillegeist
+    h_in = hillegeist.HillegeistInputs(
+        working_capital=wc,
+        retained_earnings=_latest_value(bs_q, "Retained Earnings") or 0,
+        ebit=_latest_value(is_q, "Operating Income (EBIT)") or 0,
+        market_value_equity=equity_value,
+        total_liabilities=tot_liab or 1,
+        total_assets=_latest_value(bs_q, "Total Assets") or 1,
+    )
+    h = hillegeist.solve(h_in)
+    write_label_value(ws, "Hillegeist: Score", h.score)
+    write_label_value(ws, "Hillegeist: Default Prob", h.default_prob)
+
+    return result
+
+
+# -----------------------------------------------------------
+# Section: Cover
+# -----------------------------------------------------------
+
+def _populate_cover(wb, ticker: str, info: dict, market: dict,
+                    analysis: dict, valuation: dict, credit: dict) -> None:
+    ws = wb["Cover"]
+
+    write_label_value(ws, "Ticker", ticker)
+    write_label_value(ws, "Name", info.get("shortName") or info.get("longName") or "")
+    write_label_value(ws, "Sector", info.get("sector") or "")
+    write_label_value(ws, "Val Date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+
+    write_label_value(ws, "Price", market.get("price"))
+    write_label_value(ws, "Fair Value (DCF)", valuation.get("fair_value"))
+    write_label_value(ws, "Upside %", valuation.get("upside"))
+    write_label_value(ws, "Margin of Safety", valuation.get("mos"))
+    write_label_value(ws, "Reverse-DCF Growth", valuation.get("implied_growth"))
+
+    scores = [s for s in analysis.get("scores", {}).values() if s is not None]
+    if scores:
+        write_label_value(ws, "Quality Score (avg)", round(sum(scores) / len(scores), 1))
+
+    edf = credit.get("edf")
+    write_label_value(ws, "EDF 1y (KMV)", edf)
+    altman_text = ""
+    if credit.get("altman_z") is not None:
+        altman_text = f"{credit['altman_z']:.2f} ({credit.get('altman_bucket','')})"
+    write_label_value(ws, "Altman Z + Bucket", altman_text)
+
+    cal = yfc.calendar(ticker)
+    earnings_date = cal.get("Earnings Date") or cal.get("earningsDate") or ""
+    write_label_value(ws, "Next Earnings", str(earnings_date) if earnings_date else "")
+    days_to = _days_to(str(earnings_date))
+    write_label_value(ws, "Days to Earnings", days_to)
+
+    insider = yfc.insider_transactions(ticker)
+    write_label_value(ws, "Insider Net (90d)", _insider_net_90d(insider))
+
+    # EPS revisions (3-month)
+    rev = yfc.eps_revisions(ticker)
+    write_label_value(ws, "3M EPS Revision", _eps_revision_3m(rev))
+
+    # Top Red Flags
+    red_flags = _format_red_flags(analysis.get("scores", {}))
+    rf_row = find_label_row(ws, "Top Red Flags (auto-populated from Analysis tab)")
+    if rf_row is not None and red_flags:
+        ws.cell(row=rf_row + 1, column=1, value="\n".join(red_flags))
+
+
+def _format_red_flags(scores: dict[str, int | None]) -> list[str]:
+    items = [(label, s) for label, s in scores.items() if s is not None and s < 5]
+    items.sort(key=lambda x: x[1])
+    return [f"• {label}: {s}/10" for label, s in items[:5]]
+
+
+def _days_to(s: str) -> int | None:
+    if not s or s == "None":
+        return None
+    try:
+        d = pd.to_datetime(s, errors="coerce")
+        if pd.isna(d):
+            return None
+        now = pd.Timestamp.now(tz="UTC")
+        if d.tz is None:
+            d = d.tz_localize("UTC")
+        return int((d - now).days)
+    except Exception:
+        return None
+
+
+def _insider_net_90d(df) -> float | None:
+    if df is None or df.empty:
+        return None
+    if "Start Date" not in df.columns and "startDate" not in df.columns:
+        return None
+    date_col = "Start Date" if "Start Date" in df.columns else "startDate"
+    val_col = "Value" if "Value" in df.columns else None
+    if val_col is None:
+        return None
+    try:
+        df = df.copy()
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=90)
+        recent = df[df[date_col] >= cutoff]
+        if recent.empty:
+            return 0.0
+        return float(recent[val_col].sum())
+    except Exception:
+        return None
+
+
+def _eps_revision_3m(df) -> float | None:
+    if df is None or df.empty:
+        return None
+    cols = [c for c in df.columns if "3m" in str(c).lower() or "3M" in str(c)]
+    if not cols:
+        return None
+    try:
+        return float(df.iloc[0][cols[0]])
+    except Exception:
+        return None
+
+
+# -----------------------------------------------------------
+# Market_Daily populator (headless)
+# -----------------------------------------------------------
+
+_HEATMAP_SECTIONS = {
+    "S&P 500 Sub-Market Performance": "sub_market",
+    "S&P 500 Sub-Sector Performance (Cap-Weighted)": "sub_sector_cw",
+    "S&P 500 Sub-Sector Performance (Equal-Weighted)": "sub_sector_ew",
+    "Top Thematic Sectors": "thematic",
+}
+
+
+def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
+    wb = load_workbook(workbook_path)
+    ws = wb["Daily Plan"]
+
+    universe = config.get("universe", {})
+
+    # SPY 5-day baseline for RS column
+    spy = yfc.prices("SPY", period="6mo", force=force)
+    spy_close = _close_series(spy)
+    spy_5d = signals.pct_change(spy_close, 5) or 0.0
+
+    for section_label, universe_key in _HEATMAP_SECTIONS.items():
+        anchor = find_section_anchor(ws, section_label)
+        if anchor is None:
+            continue
+        tickers = universe.get(universe_key, [])
+        for i, tkr in enumerate(tickers):
+            row = anchor + 2 + i
+            px = yfc.prices(tkr, period="2y", force=force)
+            close = _close_series(px)
+            if close is None or close.empty:
+                continue
+            ws.cell(row=row, column=11, value=signals.pct_change(close, 1))
+            ws.cell(row=row, column=12, value=signals.pct_change(close, 5))
+            ws.cell(row=row, column=13, value=signals.pct_off_52w_high(close))
+            ytd = signals.ytd_change(yfc.prices(tkr, period="1y"))
+            ws.cell(row=row, column=14, value=ytd)
+            five_d = signals.pct_change(close, 5)
+            ws.cell(row=row, column=15,
+                    value=(five_d - spy_5d) if five_d is not None else None)
+
+    # Section 1 booleans
+    if spy_close is not None and not spy_close.empty:
+        anchor = find_section_anchor(ws, "1. Market Trend")
+        if anchor is not None:
+            ws.cell(row=anchor + 1, column=2,
+                    value="YES" if signals.daily_buy_signal(spy_close) else "NO")
+            ws.cell(row=anchor + 2, column=2,
+                    value="YES" if signals.weekly_buy_signal(spy_close) else "NO")
+            ws.cell(row=anchor + 3, column=2,
+                    value="YES" if signals.above_rising_5dma(spy_close) else "NO")
+            ws.cell(row=anchor + 6, column=2,
+                    value=signals.market_regime(spy_close))
+
+    # Macro tab from FRED (only if API key set)
+    if config.get("fred_api_key"):
+        mws = wb["Macro"]
+        for label, code in (("3M", "DGS3MO"), ("2Y", "DGS2"),
+                            ("5Y", "DGS5"), ("10Y", "DGS10"), ("30Y", "DGS30"),
+                            ("2s10s", "T10Y2Y"), ("3M10Y", "T10Y3M"),
+                            ("Fed Funds Effective", "DFF"),
+                            ("Unemployment", "UNRATE")):
+            row = find_label_row(mws, label)
+            if row is not None:
+                v = fc.latest(code)
+                mws.cell(row=row, column=2, value=(v / 100.0) if v is not None else None)
+
+    wb.save(workbook_path)
+    return workbook_path
+
+
+def _close_series(px_df) -> pd.Series | None:
+    if px_df is None or px_df.empty:
+        return None
+    df = px_df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date")["Close"].astype(float)
+
+
+# -----------------------------------------------------------
+# Misc helpers
+# -----------------------------------------------------------
+
+def _safe_float(v) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_sum(*vals) -> float | None:
+    parts = [v for v in vals if v is not None]
+    if not parts:
+        return None
+    return sum(parts)

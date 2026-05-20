@@ -14,10 +14,13 @@ def prices(ticker: str, period: str = "10y", interval: str = "1d",
     key = f"{ticker}_{period}_{interval}"
 
     def fetch():
-        df = yf.Ticker(ticker).history(period=period, interval=interval,
-                                       auto_adjust=False)
-        if df.empty:
-            return df
+        try:
+            df = yf.Ticker(ticker).history(period=period, interval=interval,
+                                           auto_adjust=False)
+        except Exception:
+            return pd.DataFrame()
+        if df is None or df.empty:
+            return pd.DataFrame()
         df = df.reset_index().rename(columns={"Date": "date"})
         df["ticker"] = ticker
         return df
@@ -34,7 +37,12 @@ def info(ticker: str, force: bool = False) -> dict:
     key = f"{ticker}_info"
 
     def fetch():
-        d = yf.Ticker(ticker).info or {}
+        try:
+            d = yf.Ticker(ticker).info or {}
+        except Exception:
+            d = {}
+        if not d:
+            return pd.DataFrame()
         return pd.DataFrame([{"k": k, "v": str(v)} for k, v in d.items()])
 
     df = cache.get_or_fetch("prices", key, fetch, force=force)
@@ -43,46 +51,39 @@ def info(ticker: str, force: bool = False) -> dict:
     return dict(zip(df["k"], df["v"]))
 
 
-def income_statement(ticker: str, quarterly: bool = True,
-                     force: bool = False) -> pd.DataFrame:
-    key = f"{ticker}_is_{'q' if quarterly else 'a'}"
+def _statement(ticker: str, attr: str, quarterly: bool,
+               key_prefix: str, force: bool) -> pd.DataFrame:
+    key = f"{ticker}_{key_prefix}_{'q' if quarterly else 'a'}"
 
     def fetch():
-        t = yf.Ticker(ticker)
-        df = t.quarterly_income_stmt if quarterly else t.income_stmt
+        try:
+            t = yf.Ticker(ticker)
+            df = getattr(t, attr)
+        except Exception:
+            return pd.DataFrame()
         if df is None or df.empty:
             return pd.DataFrame()
         return df.reset_index().rename(columns={"index": "line"})
 
     return cache.get_or_fetch("statements", key, fetch, force=force)
+
+
+def income_statement(ticker: str, quarterly: bool = True,
+                     force: bool = False) -> pd.DataFrame:
+    attr = "quarterly_income_stmt" if quarterly else "income_stmt"
+    return _statement(ticker, attr, quarterly, "is", force)
 
 
 def balance_sheet(ticker: str, quarterly: bool = True,
                   force: bool = False) -> pd.DataFrame:
-    key = f"{ticker}_bs_{'q' if quarterly else 'a'}"
-
-    def fetch():
-        t = yf.Ticker(ticker)
-        df = t.quarterly_balance_sheet if quarterly else t.balance_sheet
-        if df is None or df.empty:
-            return pd.DataFrame()
-        return df.reset_index().rename(columns={"index": "line"})
-
-    return cache.get_or_fetch("statements", key, fetch, force=force)
+    attr = "quarterly_balance_sheet" if quarterly else "balance_sheet"
+    return _statement(ticker, attr, quarterly, "bs", force)
 
 
 def cashflow(ticker: str, quarterly: bool = True,
              force: bool = False) -> pd.DataFrame:
-    key = f"{ticker}_cf_{'q' if quarterly else 'a'}"
-
-    def fetch():
-        t = yf.Ticker(ticker)
-        df = t.quarterly_cashflow if quarterly else t.cashflow
-        if df is None or df.empty:
-            return pd.DataFrame()
-        return df.reset_index().rename(columns={"index": "line"})
-
-    return cache.get_or_fetch("statements", key, fetch, force=force)
+    attr = "quarterly_cashflow" if quarterly else "cashflow"
+    return _statement(ticker, attr, quarterly, "cf", force)
 
 
 def earnings_estimate(ticker: str, force: bool = False) -> pd.DataFrame:
