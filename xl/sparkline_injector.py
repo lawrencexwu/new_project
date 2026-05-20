@@ -179,8 +179,14 @@ def _inject_into_sheet_xml(sheet_xml_bytes: bytes,
         sqref_el = etree.SubElement(sl, f"{{{_NS_XM}}}sqref")
         sqref_el.text = sp["target_cell"]
 
-    return etree.tostring(root, xml_declaration=True, encoding="UTF-8",
-                          standalone=True)
+    # Write XML declaration manually with double-quoted attributes.
+    # lxml's xml_declaration=True writes single quotes, which Excel's
+    # XmlLite parser rejects with HRESULT 0x808c0002.
+    body = etree.tostring(root, xml_declaration=False, encoding="UTF-8")
+    return (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        + body
+    )
 
 
 def _ensure_extLst(root) -> etree._Element:
