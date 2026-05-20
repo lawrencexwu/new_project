@@ -131,6 +131,12 @@ def test_red_flags_formatting():
     assert "Critical Debt Load" in out[0]  # worst first
 
 
+def test_template_has_analysis_charts(template_path):
+    wb = load_workbook(template_path)
+    ws = wb["Analysis"]
+    assert len(ws._charts) == 4, f"expected 4 charts on Analysis, got {len(ws._charts)}"
+
+
 def test_asset_light_detection():
     # Simulating populate_ticker's gate decision via the industry constants
     industries = [

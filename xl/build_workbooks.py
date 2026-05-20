@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule, CellIsRule
 from openpyxl.styles import PatternFill
@@ -366,12 +368,16 @@ def build_ticker_template(out_path: Path) -> Path:
         return r + 1
 
     rf = 3
-    rf = _stmt_block(rf, "Income Statement (Quarterly)", [
-        "Revenue", "Cost of Revenue", "Gross Profit", "SG&A", "R&D",
-        "Depreciation & Amortization", "Other Opex",
-        "Operating Income (EBIT)", "Interest Expense",
-        "Other Non-Op Income", "Pretax Income",
-        "Provision for Taxes", "Net Income"])
+    is_labels = ["Revenue", "Cost of Revenue", "Gross Profit", "SG&A", "R&D",
+                 "Depreciation & Amortization", "Other Opex",
+                 "Operating Income (EBIT)", "Interest Expense",
+                 "Other Non-Op Income", "Pretax Income",
+                 "Provision for Taxes", "Net Income"]
+    is_section_row = rf
+    is_period_row = rf + 1
+    is_first_label_row = rf + 2
+    rf = _stmt_block(rf, "Income Statement (Quarterly)", is_labels)
+    is_row_of = {label: is_first_label_row + i for i, label in enumerate(is_labels)}
     rf = _stmt_block(rf, "Balance Sheet (Quarterly)", [
         "Cash & ST Investments", "Receivables", "Inventory",
         "Current Assets", "Total Assets",
@@ -465,6 +471,42 @@ def build_ticker_template(out_path: Path) -> Path:
         end_type="num", end_value=10, end_color="10B981",
     )
     ws_a.conditional_formatting.add(score_range, rule)
+
+    # Charts section — 2x2 grid at the bottom of Analysis, referencing Fin Stat
+    chart_anchor_row = ra + 2
+    ws_a.cell(row=chart_anchor_row, column=1, value="Charts").font = S.SECTION_FONT
+    ws_a.cell(row=chart_anchor_row, column=1).fill = S.SECTION_FILL
+    ws_a.merge_cells(start_row=chart_anchor_row, start_column=1,
+                     end_row=chart_anchor_row, end_column=14)
+
+    def _quarterly_chart(chart_cls, title, fin_row, anchor_cell, color=None):
+        chart = chart_cls()
+        chart.title = title
+        chart.y_axis.title = None
+        chart.x_axis.title = None
+        chart.legend = None
+        chart.height = 7  # cm
+        chart.width = 15
+        data = Reference(fws, min_col=2, max_col=13,
+                         min_row=fin_row, max_row=fin_row)
+        cats = Reference(fws, min_col=2, max_col=13,
+                         min_row=is_period_row, max_row=is_period_row)
+        chart.add_data(data, titles_from_data=False)
+        chart.set_categories(cats)
+        ws_a.add_chart(chart, anchor_cell)
+
+    _quarterly_chart(BarChart, "Operating Income (EBIT)",
+                     is_row_of["Operating Income (EBIT)"],
+                     f"A{chart_anchor_row + 1}")
+    _quarterly_chart(LineChart, "Revenue",
+                     is_row_of["Revenue"],
+                     f"H{chart_anchor_row + 1}")
+    _quarterly_chart(BarChart, "Net Income",
+                     is_row_of["Net Income"],
+                     f"A{chart_anchor_row + 16}")
+    _quarterly_chart(LineChart, "Pretax Income",
+                     is_row_of["Pretax Income"],
+                     f"H{chart_anchor_row + 16}")
 
     # --- Valuation ---
     vws = wb.create_sheet("Valuation")
