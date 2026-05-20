@@ -244,6 +244,23 @@ def build_market_daily(out_path: Path) -> Path:
         c.alignment = S.CENTER
         c.border = S.BOX
 
+    # --- Lessons Learned ---
+    lws = wb.create_sheet("Lessons")
+    _set_header(lws, "Lessons Learned (append-only)", 8)
+    _col_widths(lws, {1: 12, 2: 10, 3: 14, 4: 40, 5: 40, 6: 40})
+    headers = ["Date", "Ticker", "Action", "Reasoning", "Outcome", "Lesson"]
+    for i, h in enumerate(headers):
+        c = lws.cell(row=3, column=i + 1, value=h)
+        c.fill = S.SUBSECTION_FILL
+        c.font = S.LABEL_FONT
+        c.alignment = S.CENTER
+        c.border = S.BOX
+    # Reserve 100 rows for entries with light formatting
+    for r in range(4, 104):
+        for c in range(1, 7):
+            lws.cell(row=r, column=c).border = S.BOX
+            lws.cell(row=r, column=c).alignment = S.TOP_LEFT
+
     # --- Positions ---
     pws = wb.create_sheet("Positions")
     _set_header(pws, "Portfolio Positions & Correlations", 12)

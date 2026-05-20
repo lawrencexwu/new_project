@@ -50,7 +50,28 @@ def main():
     p.add_argument("--force", action="store_true",
                    help="Bypass cache and force fresh fetches")
     p.add_argument("--snapshot", help="Snapshot the named ticker workbook into Archive/")
+    p.add_argument("--list-archive", action="store_true",
+                   help="List the contents of the archive directory")
     args = p.parse_args()
+
+    if args.list_archive:
+        archive = config.get("archive_dir")
+        if archive is None or not Path(archive).exists():
+            archive = Path(__file__).resolve().parent / "build" / "Archive"
+        archive = Path(archive)
+        if not archive.exists():
+            print(f"Archive dir {archive} is empty or does not exist.")
+            return
+        snapshots = sorted(archive.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not snapshots:
+            print(f"No snapshots found in {archive}.")
+            return
+        print(f"Snapshots in {archive}:")
+        for s in snapshots:
+            from datetime import datetime
+            ts = datetime.fromtimestamp(s.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            print(f"  {ts}  {s.name}")
+        return
 
     if args.snapshot:
         wb_path = _tickers_dir() / f"Ticker_{args.snapshot.upper()}.xlsx"
