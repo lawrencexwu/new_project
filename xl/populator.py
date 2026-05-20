@@ -17,6 +17,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 import config
 from compute import altman, capm, dcf, hillegeist, kmv, merton, multiples, ratios, scoring, signals
+from data import edgar_client as edgar
 from data import fred_client as fc
 from data import yfinance_client as yfc
 
@@ -200,6 +201,14 @@ def populate_ticker(template_path: Path, output_path: Path, ticker: str,
     is_q = yfc.income_statement(ticker, quarterly=True, force=force)
     bs_q = yfc.balance_sheet(ticker, quarterly=True, force=force)
     cf_q = yfc.cashflow(ticker, quarterly=True, force=force)
+
+    # EDGAR fallback when yfinance returns empty
+    if is_q is None or is_q.empty:
+        is_q = edgar.income_statement(ticker, force=force)
+    if bs_q is None or bs_q.empty:
+        bs_q = edgar.balance_sheet(ticker, force=force)
+    if cf_q is None or cf_q.empty:
+        cf_q = edgar.cashflow(ticker, force=force)
 
     rf = fc.risk_free_10y()
     mrp = 0.05  # default market risk premium
