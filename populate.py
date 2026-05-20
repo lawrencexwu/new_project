@@ -49,7 +49,17 @@ def main():
     p.add_argument("--out", help="Output path (ticker mode)")
     p.add_argument("--force", action="store_true",
                    help="Bypass cache and force fresh fetches")
+    p.add_argument("--snapshot", help="Snapshot the named ticker workbook into Archive/")
     args = p.parse_args()
+
+    if args.snapshot:
+        wb_path = _tickers_dir() / f"Ticker_{args.snapshot.upper()}.xlsx"
+        if not wb_path.exists():
+            print(f"ERROR: {wb_path} does not exist.")
+            sys.exit(1)
+        out = populator.snapshot_to_archive(wb_path)
+        print(f"Snapshot: {out}")
+        return
 
     if args.market:
         path = _market_path()

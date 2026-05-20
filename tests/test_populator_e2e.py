@@ -192,28 +192,54 @@ def test_populate_ticker_end_to_end(synthetic_data, tmp_path):
                       if fs.cell(row=rev_row, column=c).value is not None]
     assert len(populated_cols) >= 4
 
-    # Analysis
+    # Analysis — per-quarter values across cols 2..9 (8 quarters of fake data)
     an = wb["Analysis"]
     cr_row = populator.find_label_row(an, "Current Ratio (Liquidity)")
-    cr_val = an.cell(row=cr_row, column=2).value
-    assert cr_val is not None
+    populated = [an.cell(row=cr_row, column=c).value for c in range(2, 10)
+                 if an.cell(row=cr_row, column=c).value is not None]
+    assert len(populated) >= 4, f"expected per-quarter ratios, got {len(populated)}"
     cr_score = an.cell(row=cr_row, column=13).value
     assert isinstance(cr_score, int)
+
+    # Spot-check that newest quarter ratio differs from oldest (data is rising)
+    op_row = populator.find_label_row(an, "Operating Margin")
+    om_oldest = an.cell(row=op_row, column=2).value
+    om_newest = an.cell(row=op_row, column=9).value
+    assert om_oldest is not None and om_newest is not None
+    assert om_newest > om_oldest  # margins rising in fake data
 
     # Valuation
     val = wb["Valuation"]
     rev_forecast_row = populator.find_label_row(val, "Revenue")
     assert val.cell(row=rev_forecast_row, column=2).value is not None  # Y+1
 
-    # Credit
+    # Credit (Z-Score lives in col 4; CAPM/Altman labels are right-block)
     cr = wb["Credit"]
     edf_row = populator.find_label_row(cr, "EDF (Expected Default Frequency)")
     edf = cr.cell(row=edf_row, column=2).value
     assert edf is not None and 0 <= edf <= 1
 
-    z_row = populator.find_label_row(cr, "Z-Score")
-    z = cr.cell(row=z_row, column=2).value
+    z_cell = populator.find_label_cell(cr, "Z-Score")
+    assert z_cell is not None
+    z = cr.cell(row=z_cell[0], column=z_cell[1] + 1).value
     assert z is not None
+
+    # Multiples band
+    pe_row = populator.find_label_row(an, "P/E")
+    assert an.cell(row=pe_row, column=2).value is not None  # current P/E filled
+
+
+def test_snapshot_to_archive(tmp_path):
+    from openpyxl import Workbook
+    wb = Workbook()
+    src = tmp_path / "Ticker_FOO.xlsx"
+    wb.save(src)
+    archive = tmp_path / "Archive"
+
+    snap = populator.snapshot_to_archive(src, archive_dir=archive)
+    assert snap.exists()
+    assert snap.parent == archive
+    assert snap.stem.startswith("Ticker_FOO_")
 
 
 def test_populate_ticker_asset_light_hides_dso(synthetic_data, tmp_path,

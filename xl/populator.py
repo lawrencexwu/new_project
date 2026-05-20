@@ -208,6 +208,7 @@ def populate_ticker(template_path: Path, output_path: Path, ticker: str,
     market = _populate_market(wb, ticker, info, px_df, rf, beta_val, mrp)
     _populate_fin_stat(wb, is_q, bs_q, cf_q)
     analysis_results = _populate_analysis(wb, is_q, bs_q, cf_q, asset_light=asset_light)
+    _populate_multiples_band(wb, is_q, bs_q, cf_q, px_df, market)
     valuation_results = _populate_valuation(
         wb, ticker, is_q, bs_q, cf_q, px_df, market,
         force=force,
@@ -362,83 +363,27 @@ def _populate_analysis(wb, is_q, bs_q, cf_q, *, asset_light: bool) -> dict:
     ws = wb["Analysis"]
     result: dict[str, Any] = {"scores": {}, "metrics": {}}
 
-    rev = _latest_value(is_q, "Revenue")
-    cor = _latest_value(is_q, "Cost of Revenue")
-    sga = _latest_value(is_q, "SG&A")
-    ebit = _latest_value(is_q, "Operating Income (EBIT)")
-    ni = _latest_value(is_q, "Net Income")
-    int_exp = _latest_value(is_q, "Interest Expense")
-    pretax = _latest_value(is_q, "Pretax Income")
-    ocf = _latest_value(cf_q, "Operating Cash Flow")
-    capex = _latest_value(cf_q, "Capital Expenditures")
-    tot_assets = _latest_value(bs_q, "Total Assets")
-    cur_assets = _latest_value(bs_q, "Current Assets")
-    cur_liab = _latest_value(bs_q, "Current Liabilities")
-    inv = _latest_value(bs_q, "Inventory")
-    recv = _latest_value(bs_q, "Receivables")
-    cash = _latest_value(bs_q, "Cash & ST Investments")
-    lt_debt = _latest_value(bs_q, "Long-Term Debt")
-    tot_liab = _latest_value(bs_q, "Total Liabilities")
-    equity = _latest_value(bs_q, "Total Equity")
-    re_earnings = _latest_value(bs_q, "Retained Earnings")
+    quarters = _aligned_quarters(is_q, bs_q, cf_q, n=11)
+    if not quarters:
+        return result
 
-    total_debt = _safe_sum(lt_debt, _latest_value(bs_q, "Current Liabilities") if False else None)
-    if total_debt is None:
-        total_debt = lt_debt
+    per_q = [_compute_ratios_for_quarter(is_q, bs_q, cf_q, q) for q in quarters]
+    latest = per_q[-1]
 
-    fcf = ratios.fcf(ocf, capex)
-    working_capital = _safe_sum(cur_assets, -cur_liab) if (cur_assets is not None and cur_liab is not None) else None
-    net_cash = (cash or 0) - (total_debt or 0) if (cash is not None or total_debt is not None) else None
-
-    metrics: dict[str, float | None] = {
-        "Quality of Earnings (OCF/NI)": ratios.quality_of_earnings(ocf, ni),
-        "EBITDA-like Cash Flow": ocf,
-        "EBITDA-like Cash Flow Margin": ratios.safe_div(ocf, rev),
-        "Free Cash Flow": fcf,
-        "Total Debt": total_debt,
-        "Net Cash – Total Debt": net_cash,
-        "Working Capital": working_capital,
-        "Debt-to-Equity (D/E)": ratios.debt_to_equity(total_debt, equity),
-        "Current Ratio (Liquidity)": ratios.current_ratio(cur_assets, cur_liab),
-        "Quick Ratio (Liquidity)": ratios.quick_ratio(cur_assets, inv, cur_liab),
-        "Inventory Turnover (Efficiency)": ratios.inventory_turnover(cor, inv),
-        "DSO (Efficiency)": ratios.days_sales_outstanding(recv, rev, period_days=90),
-        "WACC": None,  # filled by valuation step
-        "ROIC": ratios.roic(ratios.nopat(ebit, 0.21), _safe_sum(equity, total_debt)),
-        "ROCE": ratios.safe_div(ebit, _safe_sum(equity, total_debt)),
-        "CROCI": ratios.croci(_safe_sum(ebit, _latest_value(is_q, "Depreciation & Amortization")),
-                              _safe_sum(equity, total_debt)),
-        "Debt/FCF": ratios.debt_to_fcf(total_debt, ocf, capex),
-        "Debt/Net OCF": ratios.debt_to_ocf(total_debt, ocf),
-        "Debt/Assets": ratios.debt_to_assets(total_debt, tot_assets),
-        "Interest Cover": ratios.interest_cover(ebit, int_exp),
-        "FCF/Interest": ratios.fcf_to_interest(ocf, capex, int_exp),
-        "Debt/OCF": ratios.debt_to_ocf(total_debt, ocf),
-        "CAPEX % of OCF": ratios.capex_pct_ocf(capex, ocf),
-    }
-
-    tb, ib, om, at, em = ratios.dupont_5step(ni, pretax, ebit, rev, tot_assets, equity)
-    metrics["Tax Burden"] = tb
-    metrics["Interest Burden"] = ib
-    metrics["Operating Margin"] = om
-    metrics["Asset Turnover"] = at
-    metrics["Equity Multiplier"] = em
-    if None not in (tb, ib, om, at, em):
-        metrics["Implied ROE"] = tb * ib * om * at * em
-    else:
-        metrics["Implied ROE"] = None
-
-    score_map = _score_metrics(metrics)
-
-    # Write latest-quarter value into col 2 and score (if any) into col 13
-    for label, value in metrics.items():
+    # Write per-quarter values across cols 2..12, latest-quarter score in col 13
+    score_bands = _SCORE_BAND_MAP
+    for label in _ANALYSIS_LABEL_ORDER:
         row = find_label_row(ws, label)
         if row is None:
             continue
-        if value is not None:
-            ws.cell(row=row, column=2, value=value)
-        if label in score_map and score_map[label] is not None:
-            ws.cell(row=row, column=13, value=score_map[label])
+        for i, q_values in enumerate(per_q):
+            v = q_values.get(label)
+            if v is not None:
+                ws.cell(row=row, column=2 + i, value=v)
+        if label in score_bands:
+            s = scoring.score(latest.get(label), score_bands[label])
+            if s is not None:
+                ws.cell(row=row, column=13, value=s)
 
     # Industry-tag gating: blank out DSO and Inventory Turnover rows for
     # asset-light businesses.
@@ -451,46 +396,263 @@ def _populate_analysis(wb, is_q, bs_q, cf_q, *, asset_light: bool) -> dict:
                 ws.cell(row=row, column=c).value = None
             ws.cell(row=row, column=13).value = "N/A"
 
-    result["metrics"] = metrics
-    result["scores"] = score_map
-    result["fcf"] = fcf
-    result["total_debt"] = total_debt
-    result["working_capital"] = working_capital
-    result["retained_earnings"] = re_earnings
-    result["sales"] = rev
-    result["ebit"] = ebit
-    result["net_income"] = ni
-    result["total_assets"] = tot_assets
-    result["total_liabilities"] = tot_liab
-    result["equity"] = equity
-    result["cur_liab"] = cur_liab
-    result["lt_debt"] = lt_debt
-    result["ocf"] = ocf
-    result["capex"] = capex
+    result["metrics"] = latest
+    result["scores"] = {label: scoring.score(latest.get(label), score_bands[label])
+                        for label in score_bands if latest.get(label) is not None}
+    result["quarters"] = [str(q) for q in quarters]
+    result["per_quarter"] = per_q
+    result["fcf"] = latest.get("Free Cash Flow")
+    result["total_debt"] = latest.get("Total Debt")
+    result["working_capital"] = latest.get("Working Capital")
+    result["sales"] = latest.get("Revenue (TTM proxy)") or 0
+    result["ebit"] = latest.get("__ebit_raw")
+    result["net_income"] = latest.get("__ni_raw")
+    result["total_assets"] = latest.get("__total_assets_raw")
+    result["total_liabilities"] = latest.get("__total_liab_raw")
+    result["equity"] = latest.get("__equity_raw")
+    result["cur_liab"] = latest.get("__cur_liab_raw")
+    result["lt_debt"] = latest.get("__lt_debt_raw")
+    result["ocf"] = latest.get("__ocf_raw")
+    result["capex"] = latest.get("__capex_raw")
     return result
 
 
-def _score_metrics(metrics: dict[str, float | None]) -> dict[str, int | None]:
-    out: dict[str, int | None] = {}
-    out["Quality of Earnings (OCF/NI)"] = scoring.score(
-        metrics["Quality of Earnings (OCF/NI)"], scoring.HIGHER_IS_BETTER)
-    out["EBITDA-like Cash Flow Margin"] = scoring.score(
-        metrics["EBITDA-like Cash Flow Margin"], scoring.HIGHER_IS_BETTER)
-    out["Current Ratio (Liquidity)"] = scoring.score(
-        metrics["Current Ratio (Liquidity)"], scoring.CURRENT_RATIO_BANDS)
-    out["Quick Ratio (Liquidity)"] = scoring.score(
-        metrics["Quick Ratio (Liquidity)"], scoring.CURRENT_RATIO_BANDS)
-    out["Interest Cover"] = scoring.score(
-        metrics["Interest Cover"], scoring.INTEREST_COVER_BANDS)
-    out["DSO (Efficiency)"] = scoring.score(
-        metrics["DSO (Efficiency)"], scoring.DSO_BANDS)
-    out["Debt-to-Equity (D/E)"] = scoring.score(
-        metrics["Debt-to-Equity (D/E)"], scoring.LOWER_IS_BETTER)
-    out["Debt/Assets"] = scoring.score(
-        metrics["Debt/Assets"], scoring.LOWER_IS_BETTER)
-    out["Operating Margin"] = scoring.score(
-        metrics["Operating Margin"], scoring.HIGHER_IS_BETTER)
-    return out
+# Ratio label → score band lookup
+_SCORE_BAND_MAP: dict[str, list] = {
+    "Quality of Earnings (OCF/NI)": scoring.HIGHER_IS_BETTER,
+    "EBITDA-like Cash Flow Margin": scoring.HIGHER_IS_BETTER,
+    "Current Ratio (Liquidity)": scoring.CURRENT_RATIO_BANDS,
+    "Quick Ratio (Liquidity)": scoring.CURRENT_RATIO_BANDS,
+    "Interest Cover": scoring.INTEREST_COVER_BANDS,
+    "DSO (Efficiency)": scoring.DSO_BANDS,
+    "Debt-to-Equity (D/E)": scoring.LOWER_IS_BETTER,
+    "Debt/Assets": scoring.LOWER_IS_BETTER,
+    "Operating Margin": scoring.HIGHER_IS_BETTER,
+}
+
+# Order in which we look up rows to write per-quarter values
+_ANALYSIS_LABEL_ORDER = [
+    "Quality of Earnings (OCF/NI)", "EBITDA-like Cash Flow",
+    "EBITDA-like Cash Flow Margin", "Proxy Δ Working Capital",
+    "Free Cash Flow", "Total Debt", "Net Cash – Total Debt", "Working Capital",
+    "Dependence on Debt Financing", "Negative Working Capital",
+    "Massive Interest Expenses", "Accumulated Losses in RE",
+    "Critical Debt Load", "Interest Burden", "Debt-to-Equity (D/E)",
+    "Current Ratio (Liquidity)", "Quick Ratio (Liquidity)",
+    "Inventory Turnover (Efficiency)", "DSO (Efficiency)",
+    "ROIC", "ROIC – WACC", "ROCE", "CROCI", "CROCI – WACC",
+    "Debt/FCF", "Debt/Net OCF", "Debt/Assets", "Interest Cover",
+    "FCF/Interest", "Debt/OCF", "CAPEX % of OCF",
+    "Tax Burden", "Operating Margin", "Asset Turnover", "Equity Multiplier",
+    "Implied ROE",
+]
+
+
+def _aligned_quarters(is_q, bs_q, cf_q, n: int = 11) -> list:
+    """Return the quarters (sorted oldest→newest) present in all three
+    statements. Returns the last n only."""
+    def _cols(df):
+        if df is None or df.empty:
+            return set()
+        cols = list(df.columns)
+        if "line" in cols:
+            cols.remove("line")
+        return set(cols)
+
+    common = _cols(is_q) & _cols(bs_q) & _cols(cf_q)
+    if not common:
+        common = _cols(is_q) | _cols(bs_q) | _cols(cf_q)
+    quarters = sorted(common, key=lambda c: pd.to_datetime(c, errors="coerce") or pd.NaT)
+    return quarters[-n:]
+
+
+def _q_value(df, label: str, quarter) -> float | None:
+    """Lookup a single yfinance line value at a given quarter date column."""
+    if df is None or df.empty:
+        return None
+    row = _row_from_yf(df, label)
+    if row is None:
+        return None
+    if quarter not in row.index:
+        return None
+    v = row[quarter]
+    if pd.isna(v):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compute_ratios_for_quarter(is_q, bs_q, cf_q, quarter) -> dict[str, float | None]:
+    """Compute the full ratio set for a single quarter."""
+    rev = _q_value(is_q, "Revenue", quarter)
+    cor = _q_value(is_q, "Cost of Revenue", quarter)
+    ebit = _q_value(is_q, "Operating Income (EBIT)", quarter)
+    ni = _q_value(is_q, "Net Income", quarter)
+    int_exp = _q_value(is_q, "Interest Expense", quarter)
+    pretax = _q_value(is_q, "Pretax Income", quarter)
+    da = _q_value(is_q, "Depreciation & Amortization", quarter)
+    ocf = _q_value(cf_q, "Operating Cash Flow", quarter)
+    capex = _q_value(cf_q, "Capital Expenditures", quarter)
+    tot_assets = _q_value(bs_q, "Total Assets", quarter)
+    cur_assets = _q_value(bs_q, "Current Assets", quarter)
+    cur_liab = _q_value(bs_q, "Current Liabilities", quarter)
+    inv = _q_value(bs_q, "Inventory", quarter)
+    recv = _q_value(bs_q, "Receivables", quarter)
+    cash = _q_value(bs_q, "Cash & ST Investments", quarter)
+    lt_debt = _q_value(bs_q, "Long-Term Debt", quarter)
+    tot_liab = _q_value(bs_q, "Total Liabilities", quarter)
+    equity = _q_value(bs_q, "Total Equity", quarter)
+
+    total_debt = lt_debt
+    fcf = ratios.fcf(ocf, capex)
+    working_capital = None
+    if cur_assets is not None and cur_liab is not None:
+        working_capital = cur_assets - cur_liab
+    net_cash = None
+    if cash is not None or total_debt is not None:
+        net_cash = (cash or 0) - (total_debt or 0)
+
+    tb, ib, om, at, em = ratios.dupont_5step(ni, pretax, ebit, rev, tot_assets, equity)
+    implied_roe = None
+    if None not in (tb, ib, om, at, em):
+        implied_roe = tb * ib * om * at * em
+
+    return {
+        "Quality of Earnings (OCF/NI)": ratios.quality_of_earnings(ocf, ni),
+        "EBITDA-like Cash Flow": ocf,
+        "EBITDA-like Cash Flow Margin": ratios.safe_div(ocf, rev),
+        "Free Cash Flow": fcf,
+        "Total Debt": total_debt,
+        "Net Cash – Total Debt": net_cash,
+        "Working Capital": working_capital,
+        "Debt-to-Equity (D/E)": ratios.debt_to_equity(total_debt, equity),
+        "Current Ratio (Liquidity)": ratios.current_ratio(cur_assets, cur_liab),
+        "Quick Ratio (Liquidity)": ratios.quick_ratio(cur_assets, inv, cur_liab),
+        "Inventory Turnover (Efficiency)": ratios.inventory_turnover(cor, inv),
+        "DSO (Efficiency)": ratios.days_sales_outstanding(recv, rev, period_days=90),
+        "ROIC": ratios.roic(ratios.nopat(ebit, 0.21), _safe_sum(equity, total_debt)),
+        "ROCE": ratios.safe_div(ebit, _safe_sum(equity, total_debt)),
+        "CROCI": ratios.croci(_safe_sum(ebit, da), _safe_sum(equity, total_debt)),
+        "Debt/FCF": ratios.debt_to_fcf(total_debt, ocf, capex),
+        "Debt/Net OCF": ratios.debt_to_ocf(total_debt, ocf),
+        "Debt/Assets": ratios.debt_to_assets(total_debt, tot_assets),
+        "Interest Cover": ratios.interest_cover(ebit, int_exp),
+        "FCF/Interest": ratios.fcf_to_interest(ocf, capex, int_exp),
+        "Debt/OCF": ratios.debt_to_ocf(total_debt, ocf),
+        "CAPEX % of OCF": ratios.capex_pct_ocf(capex, ocf),
+        "Tax Burden": tb,
+        "Interest Burden": ib,
+        "Operating Margin": om,
+        "Asset Turnover": at,
+        "Equity Multiplier": em,
+        "Implied ROE": implied_roe,
+        # underscore-prefixed: used by credit/valuation, not written to sheet
+        "__ebit_raw": ebit,
+        "__ni_raw": ni,
+        "__total_assets_raw": tot_assets,
+        "__total_liab_raw": tot_liab,
+        "__equity_raw": equity,
+        "__cur_liab_raw": cur_liab,
+        "__lt_debt_raw": lt_debt,
+        "__ocf_raw": ocf,
+        "__capex_raw": capex,
+        "Revenue (TTM proxy)": rev,
+    }
+
+
+# -----------------------------------------------------------
+# Section: Multiples Band
+# -----------------------------------------------------------
+
+def _populate_multiples_band(wb, is_q, bs_q, cf_q, px_df, market: dict) -> None:
+    """Compute current vs historical bands for P/E, EV/EBITDA, EV/Sales,
+    P/B, FCF Yield. Historical multiples are computed by aligning each
+    fiscal quarter end with the share price at that date.
+    """
+    ws = wb["Analysis"]
+    row = find_label_row(ws, "P/E")
+    if row is None:
+        return
+
+    quarters = _aligned_quarters(is_q, bs_q, cf_q, n=44)  # up to 11 years
+    if not quarters or px_df is None or px_df.empty:
+        return
+
+    px_df = px_df.copy()
+    px_df["date"] = pd.to_datetime(px_df["date"])
+    price_series = px_df.set_index("date")["Close"].astype(float)
+
+    shares = market.get("shares") or 1.0
+
+    pe_series, ev_ebitda_series, ev_sales_series = [], [], []
+    pb_series, fcfy_series = [], []
+
+    for q in quarters:
+        q_ts = pd.to_datetime(q, errors="coerce")
+        if pd.isna(q_ts):
+            continue
+        # Look for the trading day on or just before quarter-end
+        if price_series.empty:
+            continue
+        if q_ts.tz is None and price_series.index.tz is not None:
+            q_ts = q_ts.tz_localize(price_series.index.tz)
+        elif q_ts.tz is not None and price_series.index.tz is None:
+            q_ts = q_ts.tz_localize(None)
+        prior = price_series.loc[:q_ts]
+        if prior.empty:
+            continue
+        price_at_q = float(prior.iloc[-1])
+
+        ttm_idx = quarters[max(0, quarters.index(q) - 3): quarters.index(q) + 1]
+        ni_ttm = sum(filter(None, (_q_value(is_q, "Net Income", t) for t in ttm_idx)))
+        rev_ttm = sum(filter(None, (_q_value(is_q, "Revenue", t) for t in ttm_idx)))
+        ebit_ttm = sum(filter(None, (_q_value(is_q, "Operating Income (EBIT)", t) for t in ttm_idx)))
+        da_ttm = sum(filter(None, (_q_value(is_q, "Depreciation & Amortization", t) for t in ttm_idx)))
+        ocf_ttm = sum(filter(None, (_q_value(cf_q, "Operating Cash Flow", t) for t in ttm_idx)))
+        capex_ttm = sum(filter(None, (_q_value(cf_q, "Capital Expenditures", t) for t in ttm_idx)))
+        fcf_ttm = ratios.fcf(ocf_ttm, capex_ttm)
+
+        equity_at_q = _q_value(bs_q, "Total Equity", q)
+        cash_at_q = _q_value(bs_q, "Cash & ST Investments", q) or 0.0
+        debt_at_q = _q_value(bs_q, "Long-Term Debt", q) or 0.0
+
+        market_cap_at_q = price_at_q * shares
+        ev_at_q = market_cap_at_q + debt_at_q - cash_at_q
+        ebitda_ttm = (ebit_ttm or 0) + (da_ttm or 0)
+
+        eps_ttm = ratios.safe_div(ni_ttm, shares)
+        book_per_share = ratios.safe_div(equity_at_q, shares)
+
+        pe_series.append(ratios.safe_div(price_at_q, eps_ttm))
+        ev_ebitda_series.append(ratios.safe_div(ev_at_q, ebitda_ttm))
+        ev_sales_series.append(ratios.safe_div(ev_at_q, rev_ttm))
+        pb_series.append(ratios.safe_div(price_at_q, book_per_share))
+        fcfy_series.append(ratios.safe_div(fcf_ttm, market_cap_at_q))
+
+    # Build bands; current = last value in each series
+    rows_data = [
+        ("P/E", pe_series),
+        ("EV/EBITDA", ev_ebitda_series),
+        ("EV/Sales", ev_sales_series),
+        ("P/B", pb_series),
+        ("FCF Yield", fcfy_series),
+    ]
+    for label, series in rows_data:
+        s = pd.Series([v for v in series if v is not None and not (isinstance(v, float) and math.isinf(v))])
+        if s.empty:
+            continue
+        band = multiples.band_from_series(label, current=s.iloc[-1], historical=s)
+        r = find_label_row(ws, label)
+        if r is None:
+            continue
+        ws.cell(row=r, column=2).value = band.current
+        ws.cell(row=r, column=3).value = band.median_3y
+        ws.cell(row=r, column=4).value = band.median_5y
+        ws.cell(row=r, column=5).value = band.median_10y
+        ws.cell(row=r, column=6).value = band.min_5y
+        ws.cell(row=r, column=7).value = band.max_5y
 
 
 # -----------------------------------------------------------
@@ -958,6 +1120,25 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
 
     wb.save(workbook_path)
     return workbook_path
+
+
+def snapshot_to_archive(workbook_path: Path, archive_dir: Path | None = None) -> Path:
+    """Create a timestamped copy of a workbook in the archive directory.
+    Returns the snapshot path."""
+    workbook_path = Path(workbook_path)
+    if archive_dir is None:
+        archive_dir = config.get("archive_dir")
+        if archive_dir is None:
+            archive_dir = workbook_path.parent / "Archive"
+    archive_dir = Path(archive_dir)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    stem = workbook_path.stem
+    snapshot_name = f"{stem}_{ts}{workbook_path.suffix}"
+    snapshot_path = archive_dir / snapshot_name
+    shutil.copy(workbook_path, snapshot_path)
+    return snapshot_path
 
 
 def _close_series(px_df) -> pd.Series | None:

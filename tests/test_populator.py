@@ -116,22 +116,12 @@ def test_populate_fin_stat_writes_revenue(workbook):
     assert ws.cell(row=rev_row, column=5).value == 130
 
 
-def test_score_metrics_subset():
-    metrics = {
-        "Quality of Earnings (OCF/NI)": 0.8,
-        "EBITDA-like Cash Flow Margin": 0.15,
-        "Current Ratio (Liquidity)": 1.5,
-        "Quick Ratio (Liquidity)": 1.0,
-        "Interest Cover": 5.0,
-        "DSO (Efficiency)": 45.0,
-        "Debt-to-Equity (D/E)": 0.4,
-        "Debt/Assets": 0.3,
-        "Operating Margin": 0.12,
-    }
-    scores = populator._score_metrics(metrics)
-    assert scores["Quality of Earnings (OCF/NI)"] is not None
-    assert scores["Current Ratio (Liquidity)"] == 9
-    assert scores["Interest Cover"] == 7
+def test_score_band_map_lookups():
+    from compute import scoring
+    assert scoring.score(0.8, populator._SCORE_BAND_MAP["Quality of Earnings (OCF/NI)"]) is not None
+    assert scoring.score(1.5, populator._SCORE_BAND_MAP["Current Ratio (Liquidity)"]) == 9
+    assert scoring.score(5.0, populator._SCORE_BAND_MAP["Interest Cover"]) == 7
+    assert scoring.score(44.0, populator._SCORE_BAND_MAP["DSO (Efficiency)"]) == 9
 
 
 def test_red_flags_formatting():
