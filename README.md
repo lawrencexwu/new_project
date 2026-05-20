@@ -74,17 +74,23 @@ python -m xl.build_workbooks
 ## CLI usage
 
 ```bash
-# Populate Market_Daily with sector heatmaps, trend signals, macro
+# Morning routine — refresh Market_Daily + every existing Ticker_*.xlsx
+python populate.py --routine
+
+# Just refresh the market dashboard (sector heatmaps + signals + macro)
 python populate.py --market
 
-# Clone the template and fill it for one ticker
+# Refresh just your watchlist (every Ticker_*.xlsx in Drive)
+python populate.py --watchlist
+
+# Populate one or more tickers
 python populate.py NVDA
-# → produces build/Ticker_NVDA.xlsx (or settings.tickers_dir / Ticker_NVDA.xlsx)
+python populate.py NVDA AAPL MSFT GOOGL    # batch
 
 # Bypass cache and force a fresh fetch
 python populate.py NVDA --force
 
-# Custom output path
+# Custom output path (single ticker only)
 python populate.py NVDA --out ~/Desktop/nvda-snapshot.xlsx
 
 # Take a timestamped snapshot of an existing ticker workbook
@@ -123,14 +129,22 @@ To set up:
 
 ## Recurring workflow
 
-**Morning routine (5 min):** open `Market_Daily.xlsx` → click Refresh →
-glance at Market Regime, sector heatmap, breadth. Read prior journal.
-Write today's situational + emotional notes. Click Snapshot to Journal.
+**Morning (1 command):**
+```bash
+python populate.py --routine
+```
+Refreshes Market_Daily *and* every Ticker_*.xlsx in Drive. Open
+Market_Daily, glance at Market Regime + sector heatmaps + Summary
+(your ranked watchlist), read your prior journal entry, write today's
+situational + emotional notes.
 
-**Ticker analysis (1 min):** `python populate.py NEW_TICKER` from the
-terminal. Open the file. Read the Cover red flags first, then dig into
-Analysis quarters for trends, Valuation for DCF/reverse DCF/MoS, Credit
-for KMV EDF + Altman Z.
+**Ticker analysis (per name):**
+```bash
+python populate.py NEW_TICKER
+```
+Open the file. Read the Cover red flags first, then dig into Analysis
+quarters for trends, Valuation for DCF/reverse DCF/MoS, Credit for KMV
+EDF + Altman Z.
 
 **Earnings:** `python populate.py NVDA --force` to bypass cache. Charts
 + ratios + DCF auto-recompute against new filings + new consensus.

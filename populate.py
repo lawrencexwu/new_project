@@ -1,10 +1,17 @@
 """Populate workbooks with live data (headless via openpyxl).
 
 Usage:
-    python populate.py --market                  # fills Market_Daily.xlsx
-    python populate.py NVDA                      # clones template → Ticker_NVDA.xlsx, fills it
-    python populate.py NVDA --out path.xlsx      # custom output path
-    python populate.py NVDA --force              # bypass cache
+    python populate.py --market                  fills Market_Daily.xlsx
+    python populate.py NVDA                      clones template → Ticker_NVDA.xlsx
+    python populate.py NVDA AAPL MSFT            batch (one call per ticker)
+    python populate.py --routine                 morning: --market + refresh every
+                                                 existing Ticker_*.xlsx file
+    python populate.py --watchlist               refresh every existing
+                                                 Ticker_*.xlsx (no --market)
+    python populate.py NVDA --force              bypass cache
+    python populate.py --doctor                  setup diagnostic
+    python populate.py --list-archive            list snapshot files
+    python populate.py --snapshot NVDA           snapshot a ticker workbook
 """
 from __future__ import annotations
 
@@ -43,10 +50,14 @@ def _tickers_dir() -> Path:
 
 def main():
     p = argparse.ArgumentParser(description="Populate workbooks with live data")
-    p.add_argument("ticker", nargs="?", help="Ticker to populate")
+    p.add_argument("tickers", nargs="*", help="One or more tickers to populate")
     p.add_argument("--market", action="store_true",
                    help="Populate Market_Daily.xlsx")
-    p.add_argument("--out", help="Output path (ticker mode)")
+    p.add_argument("--routine", action="store_true",
+                   help="Morning routine: --market + refresh every existing Ticker_*.xlsx")
+    p.add_argument("--watchlist", action="store_true",
+                   help="Refresh every existing Ticker_*.xlsx file (no --market)")
+    p.add_argument("--out", help="Output path (single-ticker mode only)")
     p.add_argument("--force", action="store_true",
                    help="Bypass cache and force fresh fetches")
     p.add_argument("--snapshot", help="Snapshot the named ticker workbook into Archive/")
@@ -88,16 +99,20 @@ def main():
         print(f"Snapshot: {out}")
         return
 
-    if args.market:
-        path = _market_path()
-        if not path.exists():
-            print(f"ERROR: {path} does not exist. Run `python -m xl.build_workbooks` first.")
-            sys.exit(1)
-        out = populator.populate_market_daily(path, force=args.force)
-        print(f"Populated {out}")
+    if args.routine:
+        _refresh_market(args.force)
+        _refresh_watchlist(args.force)
         return
 
-    if not args.ticker:
+    if args.watchlist:
+        _refresh_watchlist(args.force)
+        return
+
+    if args.market:
+        _refresh_market(args.force)
+        return
+
+    if not args.tickers:
         p.print_help()
         sys.exit(1)
 
@@ -106,9 +121,47 @@ def main():
         print(f"ERROR: template {template} does not exist. Run `python -m xl.build_workbooks` first.")
         sys.exit(1)
 
-    out_path = Path(args.out) if args.out else _tickers_dir() / f"Ticker_{args.ticker.upper()}.xlsx"
-    result = populator.populate_ticker(template, out_path, args.ticker, force=args.force)
-    print(f"Populated {result}")
+    if args.out and len(args.tickers) > 1:
+        print("ERROR: --out can only be used with a single ticker.")
+        sys.exit(1)
+
+    for tkr in args.tickers:
+        out_path = (Path(args.out) if args.out
+                    else _tickers_dir() / f"Ticker_{tkr.upper()}.xlsx")
+        result = populator.populate_ticker(template, out_path, tkr,
+                                            force=args.force)
+        print(f"Populated {result}")
+
+
+def _refresh_market(force: bool):
+    path = _market_path()
+    if not path.exists():
+        print(f"ERROR: {path} does not exist. Run `python -m xl.build_workbooks` first.")
+        sys.exit(1)
+    out = populator.populate_market_daily(path, force=force)
+    print(f"Populated {out}")
+
+
+def _refresh_watchlist(force: bool):
+    tdir = _tickers_dir()
+    if not tdir.exists():
+        print(f"ERROR: tickers dir {tdir} does not exist.")
+        sys.exit(1)
+    files = sorted(tdir.glob("Ticker_*.xlsx"))
+    files = [f for f in files if f.name != "Ticker_TEMPLATE.xlsx"]
+    if not files:
+        print(f"No Ticker_*.xlsx files in {tdir}. Run `python populate.py NVDA` first.")
+        return
+    template = _template_path()
+    print(f"Refreshing {len(files)} ticker workbooks...")
+    for f in files:
+        # Extract ticker from filename
+        ticker = f.stem.replace("Ticker_", "")
+        try:
+            populator.populate_ticker(template, f, ticker, force=force)
+            print(f"  {ticker}: OK")
+        except Exception as e:
+            print(f"  {ticker}: FAILED ({type(e).__name__}: {e})")
 
 
 def _doctor():
