@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.DS_Store
+*.swp
+
+# Local cache and outputs
+Cache/
+Archive/
+build/
+*.xlsx~$*
+
+# Local settings overrides
+settings.local.json
