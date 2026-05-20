@@ -228,6 +228,12 @@ def test_populate_ticker_end_to_end(synthetic_data, tmp_path):
     pe_row = populator.find_label_row(an, "P/E")
     assert an.cell(row=pe_row, column=2).value is not None  # current P/E filled
 
+    # Owner Earnings
+    oe_row = populator.find_label_row(an, "Owner Earnings (TTM)")
+    assert an.cell(row=oe_row, column=2).value is not None
+    cap_row = populator.find_label_row(an, "Capital Allocation: CAPEX %")
+    assert an.cell(row=cap_row, column=2).value is not None
+
 
 def test_snapshot_to_archive(tmp_path):
     from openpyxl import Workbook

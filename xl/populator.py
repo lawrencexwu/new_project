@@ -217,6 +217,7 @@ def populate_ticker(template_path: Path, output_path: Path, ticker: str,
     market = _populate_market(wb, ticker, info, px_df, rf, beta_val, mrp)
     _populate_fin_stat(wb, is_q, bs_q, cf_q)
     analysis_results = _populate_analysis(wb, is_q, bs_q, cf_q, asset_light=asset_light)
+    _populate_owner_earnings(wb, is_q, cf_q)
     _populate_multiples_band(wb, is_q, bs_q, cf_q, px_df, market)
     valuation_results = _populate_valuation(
         wb, ticker, is_q, bs_q, cf_q, px_df, market,
@@ -569,6 +570,50 @@ def _compute_ratios_for_quarter(is_q, bs_q, cf_q, quarter) -> dict[str, float | 
         "__capex_raw": capex,
         "Revenue (TTM proxy)": rev,
     }
+
+
+# -----------------------------------------------------------
+# Section: Owner Earnings & Capital Allocation
+# -----------------------------------------------------------
+
+def _populate_owner_earnings(wb, is_q, cf_q) -> None:
+    ws = wb["Analysis"]
+    ni_ttm = _ttm(is_q, "Net Income")
+    da_ttm = _ttm(is_q, "Depreciation & Amortization")
+    capex_ttm = _ttm(cf_q, "Capital Expenditures")
+    rev_ttm = _ttm(is_q, "Revenue")
+    ocf_ttm = _ttm(cf_q, "Operating Cash Flow")
+    div_ttm = _ttm(cf_q, "Dividends Paid")
+    buybacks_ttm = _ttm(cf_q, "Share Buybacks")
+    debt_paydown_ttm = _ttm(cf_q, "Net Debt Issued/Repaid")
+
+    # Maintenance CAPEX proxy: D&A (industry rule of thumb)
+    maint_capex = da_ttm
+    growth_capex = None
+    if capex_ttm is not None and maint_capex is not None:
+        growth_capex = abs(capex_ttm) - abs(maint_capex)
+        growth_capex = max(growth_capex, 0)
+
+    oe = ratios.owner_earnings(ni_ttm, da_ttm, maint_capex) if maint_capex else None
+    oe_margin = ratios.safe_div(oe, rev_ttm)
+
+    write_label_value(ws, "Owner Earnings (TTM)", oe)
+    write_label_value(ws, "Owner Earnings Margin", oe_margin)
+    write_label_value(ws, "Maintenance CAPEX (D&A proxy)", maint_capex)
+    write_label_value(ws, "Growth CAPEX", growth_capex)
+
+    if ocf_ttm:
+        bd = ratios.capital_allocation_breakdown(
+            ocf=ocf_ttm, capex=capex_ttm,
+            buybacks=buybacks_ttm, dividends=div_ttm,
+            debt_paydown=debt_paydown_ttm,
+        )
+        if bd:
+            write_label_value(ws, "Capital Allocation: CAPEX %", bd["CAPEX"])
+            write_label_value(ws, "Capital Allocation: Buybacks %", bd["Buybacks"])
+            write_label_value(ws, "Capital Allocation: Dividends %", bd["Dividends"])
+            write_label_value(ws, "Capital Allocation: M&A %", bd["M&A"])
+            write_label_value(ws, "Capital Allocation: Debt Paydown %", bd["Debt Paydown"])
 
 
 # -----------------------------------------------------------

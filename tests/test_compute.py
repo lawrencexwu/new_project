@@ -32,6 +32,24 @@ def test_ratios_dupont():
     assert em == pytest.approx(2.5)
 
 
+def test_owner_earnings():
+    assert ratios.owner_earnings(net_income=100, da=20, maintenance_capex=15) == 105
+    assert ratios.owner_earnings(net_income=100, da=20, maintenance_capex=-15) == 105  # abs
+    assert ratios.owner_earnings(None, 20, 15) is None
+
+
+def test_capital_allocation_breakdown():
+    bd = ratios.capital_allocation_breakdown(
+        ocf=1000, capex=-200, buybacks=300, dividends=100,
+        m_and_a=50, debt_paydown=150,
+    )
+    assert bd["CAPEX"] == pytest.approx(0.20)
+    assert bd["Buybacks"] == pytest.approx(0.30)
+    assert bd["Dividends"] == pytest.approx(0.10)
+    assert bd["M&A"] == pytest.approx(0.05)
+    assert bd["Debt Paydown"] == pytest.approx(0.15)
+
+
 def test_ratios_cagr():
     assert ratios.cagr(100, 200, 5) == pytest.approx(2 ** 0.2 - 1)
     assert ratios.cagr(0, 200, 5) is None

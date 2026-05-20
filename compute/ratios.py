@@ -124,6 +124,31 @@ def dupont_5step(net_income, pretax_income, ebit, revenue, total_assets, equity)
     )
 
 
+def owner_earnings(net_income, da, maintenance_capex):
+    """Buffett-style: NI + non-cash charges − maintenance CAPEX.
+    Use maintenance_capex (proxied from D&A) rather than total capex —
+    growth CAPEX is investment, not consumption."""
+    if net_income is None or da is None or maintenance_capex is None:
+        return None
+    return net_income + da - abs(maintenance_capex)
+
+
+def capital_allocation_breakdown(ocf, capex, buybacks, dividends,
+                                 m_and_a=0.0, debt_paydown=0.0):
+    """Return % of OCF allocated to each bucket. Buckets sum to <= 1; the
+    remainder is retained or unallocated."""
+    if ocf in (None, 0):
+        return None
+    total = abs(ocf)
+    return {
+        "CAPEX": abs(capex or 0) / total,
+        "Buybacks": abs(buybacks or 0) / total,
+        "Dividends": abs(dividends or 0) / total,
+        "M&A": abs(m_and_a or 0) / total,
+        "Debt Paydown": abs(debt_paydown or 0) / total,
+    }
+
+
 def cagr(start_value, end_value, periods):
     if start_value in (None, 0) or end_value is None or periods in (None, 0):
         return None

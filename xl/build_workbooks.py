@@ -440,6 +440,21 @@ def build_ticker_template(out_path: Path) -> Path:
         ra += 1
 
     ra += 1
+    ra = _section(ws_a, ra, 1, "Owner Earnings & Capital Allocation", span=14)
+    for label, fmt in (("Owner Earnings (TTM)", S.USD_FMT),
+                       ("Owner Earnings Margin", S.PCT_FMT),
+                       ("Maintenance CAPEX (D&A proxy)", S.USD_FMT),
+                       ("Growth CAPEX", S.USD_FMT),
+                       ("Capital Allocation: CAPEX %", S.PCT_FMT),
+                       ("Capital Allocation: Buybacks %", S.PCT_FMT),
+                       ("Capital Allocation: Dividends %", S.PCT_FMT),
+                       ("Capital Allocation: M&A %", S.PCT_FMT),
+                       ("Capital Allocation: Debt Paydown %", S.PCT_FMT)):
+        ws_a.cell(row=ra, column=1, value=label).font = S.LABEL_FONT
+        ws_a.cell(row=ra, column=2).number_format = fmt
+        ra += 1
+
+    ra += 1
     ra = _section(ws_a, ra, 1, "DuPont 5-Step (Tax × Interest × OpMargin × AssetTurn × EqMult = ROE)", span=14)
     for label in ("Tax Burden", "Interest Burden", "Operating Margin",
                   "Asset Turnover", "Equity Multiplier", "Implied ROE"):
