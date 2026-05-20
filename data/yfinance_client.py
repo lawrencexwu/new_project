@@ -10,20 +10,26 @@ from data import cache
 
 
 def prices(ticker: str, period: str = "10y", interval: str = "1d",
-           force: bool = False) -> pd.DataFrame:
+           force: bool = False, retries: int = 2) -> pd.DataFrame:
     key = f"{ticker}_{period}_{interval}"
 
     def fetch():
-        try:
-            df = yf.Ticker(ticker).history(period=period, interval=interval,
-                                           auto_adjust=False)
-        except Exception:
-            return pd.DataFrame()
-        if df is None or df.empty:
-            return pd.DataFrame()
-        df = df.reset_index().rename(columns={"Date": "date"})
-        df["ticker"] = ticker
-        return df
+        import time
+        # yfinance sporadically returns empty on first call (rate-limit ramp
+        # or transient HTTP 429). Retry with backoff before giving up.
+        for attempt in range(retries + 1):
+            try:
+                df = yf.Ticker(ticker).history(period=period, interval=interval,
+                                               auto_adjust=False)
+            except Exception:
+                df = None
+            if df is not None and not df.empty:
+                df = df.reset_index().rename(columns={"Date": "date"})
+                df["ticker"] = ticker
+                return df
+            if attempt < retries:
+                time.sleep(0.5 * (2 ** attempt))  # 0.5s, 1s
+        return pd.DataFrame()
 
     return cache.get_or_fetch("prices", key, fetch, force=force)
 

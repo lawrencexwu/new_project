@@ -1251,6 +1251,8 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     HIDDEN_DATA_COL_END = 59     # BG column
     daily_plan_sparklines: list[dict] = []
 
+    fetched_ok = 0
+    fetch_failed = []
     for section_label, universe_key in _HEATMAP_SECTIONS.items():
         anchor = find_section_anchor(ws, section_label)
         if anchor is None:
@@ -1261,7 +1263,12 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
             px = yfc.prices(tkr, period="2y", force=force)
             close = _close_series(px)
             if close is None or close.empty:
+                fetch_failed.append(tkr)
+                # Mark the cell so the user can see this ticker didn't pull
+                ws.cell(row=row, column=16, value="(no data)").font = Font(
+                    name="Calibri", size=9, italic=True, color="9CA3AF")
                 continue
+            fetched_ok += 1
             ws.cell(row=row, column=11, value=signals.pct_change(close, 1))
             ws.cell(row=row, column=12, value=signals.pct_change(close, 5))
             ws.cell(row=row, column=13, value=signals.pct_off_52w_high(close))
@@ -1270,11 +1277,16 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
             five_d = signals.pct_change(close, 5)
             ws.cell(row=row, column=15,
                     value=(five_d - spy_5d) if five_d is not None else None)
-            # Write last 30 closes into hidden cols 30..59 for the sparkline
+            # Write Unicode-bar sparkline as cell value (always visible) AND
+            # set up native line sparkline that overlays this when Excel
+            # renders it. Belt + suspenders.
             last30 = close.tail(30).tolist()
+            unicode_bars = block_sparkline(last30, width=20)
+            spark_cell = ws.cell(row=row, column=16, value=unicode_bars)
+            spark_cell.font = _SPARKLINE_FONT
+            # Hidden price data for the native sparkline
             for j, v in enumerate(last30):
                 ws.cell(row=row, column=HIDDEN_DATA_COL_START + j, value=float(v))
-            # Record the sparkline target for post-save injection
             from openpyxl.utils import get_column_letter as _col
             start_col = _col(HIDDEN_DATA_COL_START)
             end_col = _col(HIDDEN_DATA_COL_START + len(last30) - 1)
@@ -1282,6 +1294,11 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
                 "data_range": f"'Daily Plan'!{start_col}{row}:{end_col}{row}",
                 "target_cell": f"P{row}",
             })
+
+    if fetch_failed:
+        print(f"  Daily Plan: {fetched_ok} ok, {len(fetch_failed)} failed: {fetch_failed}")
+    else:
+        print(f"  Daily Plan: {fetched_ok} tickers ok")
 
     # Hide the data columns
     from openpyxl.utils import get_column_letter as _col
@@ -1430,23 +1447,30 @@ def _populate_summary(wb, sparkline_specs: dict | None = None) -> None:
         summary.cell(row=r, column=11, value=row["next_earnings"])
         summary.cell(row=r, column=12, value=_to_number(row["eps_rev_3m"]))
         summary.cell(row=r, column=13, value=row["source"])
-        # Hidden price data for native sparkline (cols 20-49)
+        # Belt + suspenders sparkline (Unicode + native overlay)
         try:
             px = yfc.prices(row["ticker"], period="3mo")
             close = _close_series(px)
-            if close is not None and not close.empty and sparkline_specs is not None:
+            if close is not None and not close.empty:
                 from openpyxl.utils import get_column_letter as _col
                 last30 = close.tail(30).tolist()
-                HIDDEN_START = 20
-                for j, v in enumerate(last30):
-                    summary.cell(row=r, column=HIDDEN_START + j,
-                                 value=float(v))
-                start_col = _col(HIDDEN_START)
-                end_col = _col(HIDDEN_START + len(last30) - 1)
-                sparkline_specs.setdefault("Summary", []).append({
-                    "data_range": f"Summary!{start_col}{r}:{end_col}{r}",
-                    "target_cell": f"N{r}",
-                })
+                cell = summary.cell(row=r, column=14,
+                                    value=block_sparkline(last30, width=20))
+                cell.font = _SPARKLINE_FONT
+                if sparkline_specs is not None:
+                    HIDDEN_START = 20
+                    for j, v in enumerate(last30):
+                        summary.cell(row=r, column=HIDDEN_START + j,
+                                     value=float(v))
+                    start_col = _col(HIDDEN_START)
+                    end_col = _col(HIDDEN_START + len(last30) - 1)
+                    sparkline_specs.setdefault("Summary", []).append({
+                        "data_range": f"Summary!{start_col}{r}:{end_col}{r}",
+                        "target_cell": f"N{r}",
+                    })
+            else:
+                summary.cell(row=r, column=14, value="(no data)").font = Font(
+                    name="Calibri", size=9, italic=True, color="9CA3AF")
         except Exception:
             pass
 
@@ -1718,19 +1742,27 @@ def _populate_positions(wb, force: bool = False,
             if p["shares"] * p["cost"] > 0:
                 ws.cell(row=p["row"], column=8,
                         value=gain / (p["shares"] * p["cost"]))
-            # Hidden 30-day price data for native sparkline
+            # Belt + suspenders sparkline: Unicode bars in the cell as a
+            # fallback, native line sparkline overlays when Excel renders.
             close = price_data.get(p["ticker"])
-            if close is not None and sparkline_specs is not None:
+            if close is not None:
                 last30 = close.tail(30).tolist()
-                for j, v in enumerate(last30):
-                    ws.cell(row=p["row"], column=HIDDEN_START + j,
-                            value=float(v))
-                start_col = _col(HIDDEN_START)
-                end_col = _col(HIDDEN_START + len(last30) - 1)
-                sparkline_specs.setdefault("Positions", []).append({
-                    "data_range": f"Positions!{start_col}{p['row']}:{end_col}{p['row']}",
-                    "target_cell": f"J{p['row']}",
-                })
+                spark_cell = ws.cell(row=p["row"], column=10,
+                                     value=block_sparkline(last30, width=20))
+                spark_cell.font = _SPARKLINE_FONT
+                if sparkline_specs is not None:
+                    for j, v in enumerate(last30):
+                        ws.cell(row=p["row"], column=HIDDEN_START + j,
+                                value=float(v))
+                    start_col = _col(HIDDEN_START)
+                    end_col = _col(HIDDEN_START + len(last30) - 1)
+                    sparkline_specs.setdefault("Positions", []).append({
+                        "data_range": f"Positions!{start_col}{p['row']}:{end_col}{p['row']}",
+                        "target_cell": f"J{p['row']}",
+                    })
+            else:
+                ws.cell(row=p["row"], column=10, value="(no data)").font = Font(
+                    name="Calibri", size=9, italic=True, color="9CA3AF")
 
     for c in range(HIDDEN_START, HIDDEN_START + 30):
         ws.column_dimensions[_col(c)].hidden = True
