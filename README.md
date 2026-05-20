@@ -17,6 +17,10 @@ Market_Daily.xlsx        ← opened every morning
   Macro           Treasury curve, inflation, jobs, GDP nowcast (FRED)
   Screener        auto-flag custom-watchlist names with double-buy signal
   Journal Log     append-only daily entries
+  Lessons         append-only post-mortems (Date · Ticker · Action ·
+                  Reasoning · Outcome · Lesson)
+  Positions       holdings + auto-computed P&L + pairwise correlation
+                  matrix (90d daily returns, red/white/blue scale)
   Settings
 
 Ticker_<SYM>.xlsx        ← cloned per ticker
@@ -28,6 +32,8 @@ Ticker_<SYM>.xlsx        ← cloned per ticker
                   debt market block
   Fin Stat        IS / BS / CFS — quarterly, 11 quarters
   Analysis        per-quarter ratios + 0-10 scores + DuPont 5-step +
+                  Owner Earnings + Capital Allocation scorecard
+                  (CAPEX/Buybacks/Dividends/M&A/Debt Paydown % of OCF) +
                   multiples band (P/E · EV/EBITDA · EV/Sales · P/B ·
                   FCF Yield: current vs 3y/5y/10y) + 4 native charts
                   (EBIT · Revenue · Net Income · Pretax)
@@ -79,6 +85,9 @@ python populate.py NVDA --out ~/Desktop/nvda-snapshot.xlsx
 # Take a timestamped snapshot of an existing ticker workbook
 python populate.py --snapshot NVDA
 # → Archive/Ticker_NVDA_20260520_1430.xlsx
+
+# List all snapshots in the archive (newest first)
+python populate.py --list-archive
 ```
 
 ## xlwings macros (in-place refresh from inside Excel)
@@ -157,10 +166,15 @@ populate.py  workbook-filling CLI (`--market`, `<TICKER>`, `--snapshot`)
 
 ```bash
 python -m pytest tests/ -v
-# 31 passing — ratios, scoring, DCF, KMV, Merton, Altman, Hillegeist,
-# signals, multiples, populator helpers, end-to-end populator,
-# asset-light industry gating, snapshot-to-archive
+# 40 passing — ratios, scoring, DCF, KMV, Merton, Altman, Hillegeist,
+# signals, multiples, owner earnings, capital allocation, EDGAR concept
+# extraction, populator helpers, end-to-end populator across every
+# sheet, per-quarter ratios, multiples band, asset-light industry
+# gating, positions correlation, screener flagging, snapshot-to-archive
 ```
+
+CI runs the suite on every PR (see `.github/workflows/test.yml`) and
+uploads the built workbook templates as artifacts.
 
 ## Cuts vs the original workbook
 
@@ -181,4 +195,11 @@ python -m pytest tests/ -v
 - 0-10 scoring with red/yellow/green color scale
 - Per-quarter scoring (not just latest)
 - Industry-tag gating (DSO/Inventory hidden for software/services)
-- Timestamped snapshot to Archive
+- Owner Earnings (Buffett-style: NI + D&A − maintenance CAPEX)
+- Capital Allocation scorecard (% of OCF to each deployment)
+- Portfolio tab with pairwise correlation matrix (concentration risk
+  that doesn't show in $ weights)
+- Lessons Learned tab for post-mortems
+- Auto-screener flagging double-buy-signal names
+- Timestamped snapshot to Archive + `--list-archive` CLI
+- SEC EDGAR fallback for statements when yfinance returns empty
