@@ -48,6 +48,11 @@ def write(namespace: str, key: str, df: pd.DataFrame) -> None:
     if df is None or len(df) == 0:
         return
     p = _path(namespace, key)
+    # Parquet doesn't like mixed-type column labels (e.g. "line" + datetime
+    # cols on financial statements). Coerce all column names to strings so
+    # round-trip is clean and the UserWarning goes away.
+    df = df.copy()
+    df.columns = [str(c) for c in df.columns]
     df.to_parquet(p)
 
 
