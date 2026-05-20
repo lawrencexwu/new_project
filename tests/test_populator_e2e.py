@@ -295,6 +295,41 @@ def test_populate_positions_with_correlations(tmp_path, monkeypatch):
     assert abs(aaa_ccc_corr - (-1.0)) < 0.01
 
 
+def test_screener_flags_double_buy_signal(tmp_path, monkeypatch):
+    template = tmp_path / "Market_Daily.xlsx"
+    build_workbooks.build_market_daily(template)
+
+    wb = load_workbook(template)
+    pos = wb["Positions"]
+    pos.cell(row=4, column=1, value="UP")
+    pos.cell(row=4, column=2, value="Uptrend Co")
+    pos.cell(row=5, column=1, value="DOWN")
+    pos.cell(row=5, column=2, value="Downtrend Co")
+    wb.save(template)
+
+    def fake_prices(ticker, period="2y", interval="1d", force=False):
+        dates = pd.date_range("2024-01-01", periods=300, freq="D")
+        if ticker == "UP":
+            closes = [100 + i * 0.5 for i in range(300)]   # clear uptrend
+        elif ticker == "DOWN":
+            closes = [200 - i * 0.5 for i in range(300)]   # clear downtrend
+        else:
+            closes = [100] * 300
+        return pd.DataFrame({"date": dates, "Close": closes, "ticker": ticker})
+
+    monkeypatch.setattr(populator.yfc, "prices", fake_prices)
+    populator.populate_market_daily(template)
+
+    wb2 = load_workbook(template)
+    scr = wb2["Screener"]
+    # Row 4 should be the UP ticker (DOWN should not flag)
+    assert scr.cell(row=4, column=1).value == "UP"
+    assert scr.cell(row=4, column=3).value == "YES"
+    assert scr.cell(row=4, column=4).value == "YES"
+    # Row 5 should be empty (DOWN doesn't pass)
+    assert scr.cell(row=5, column=1).value is None
+
+
 def test_snapshot_to_archive(tmp_path):
     from openpyxl import Workbook
     wb = Workbook()

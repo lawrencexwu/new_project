@@ -1164,6 +1164,9 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
             ws.cell(row=anchor + 6, column=2,
                     value=signals.market_regime(spy_close))
 
+    # Screener: scan custom watchlist for names where both daily + weekly buy
+    _populate_screener(wb, force=force)
+
     # Macro tab from FRED (only if API key set)
     if config.get("fred_api_key"):
         mws = wb["Macro"]
@@ -1198,6 +1201,64 @@ def snapshot_to_archive(workbook_path: Path, archive_dir: Path | None = None) ->
     snapshot_path = archive_dir / snapshot_name
     shutil.copy(workbook_path, snapshot_path)
     return snapshot_path
+
+
+def _populate_screener(wb, force: bool = False) -> None:
+    """Scan Custom Watchlist tickers + any user-entered position tickers; flag
+    those where Daily + Weekly buy signals both YES. Write to Screener sheet."""
+    if "Screener" not in wb.sheetnames:
+        return
+    screener = wb["Screener"]
+    daily_plan = wb["Daily Plan"]
+
+    # Custom Watchlist anchor on Daily Plan
+    cw_anchor = find_section_anchor(
+        daily_plan, "Custom Watchlist (25 rows, user-entered)"
+    )
+    candidates: list[tuple[str, str]] = []
+    if cw_anchor is not None:
+        for i in range(25):
+            row = cw_anchor + 2 + i  # +2: section + col header
+            tkr = daily_plan.cell(row=row, column=9).value
+            name = daily_plan.cell(row=row, column=10).value
+            if tkr and str(tkr).strip():
+                candidates.append((str(tkr).strip().upper(), str(name or "")))
+
+    # Also include position tickers
+    if "Positions" in wb.sheetnames:
+        pos = wb["Positions"]
+        for r in range(4, 29):
+            tkr = pos.cell(row=r, column=1).value
+            name = pos.cell(row=r, column=2).value
+            if tkr and str(tkr).strip():
+                candidates.append((str(tkr).strip().upper(), str(name or "")))
+
+    # Clear existing screener rows (header is row 3; data rows from row 4)
+    for r in range(4, 50):
+        for c in range(1, 8):
+            screener.cell(row=r, column=c).value = None
+
+    write_row = 4
+    for tkr, name in candidates:
+        px = yfc.prices(tkr, period="2y", force=force)
+        close = _close_series(px)
+        if close is None or close.empty:
+            continue
+        daily = signals.daily_buy_signal(close)
+        weekly = signals.weekly_buy_signal(close)
+        if not (daily and weekly):
+            continue
+        screener.cell(row=write_row, column=1, value=tkr)
+        screener.cell(row=write_row, column=2, value=name)
+        screener.cell(row=write_row, column=3, value="YES")
+        screener.cell(row=write_row, column=4, value="YES")
+        screener.cell(row=write_row, column=5, value=signals.pct_change(close, 5))
+        screener.cell(row=write_row, column=5).number_format = "0.0%;[Red]-0.0%"
+        screener.cell(row=write_row, column=6, value=signals.ytd_change(px))
+        screener.cell(row=write_row, column=6).number_format = "0.0%;[Red]-0.0%"
+        screener.cell(row=write_row, column=7, value=signals.pct_off_52w_high(close))
+        screener.cell(row=write_row, column=7).number_format = "0.0%;[Red]-0.0%"
+        write_row += 1
 
 
 def _populate_positions(wb, force: bool = False) -> None:
