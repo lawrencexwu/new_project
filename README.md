@@ -127,16 +127,71 @@ To set up:
 5. Add buttons (Developer → Insert → Form Control button) and assign
    them to `xl.macros.refresh_market`, etc.
 
-## Recurring workflow
+## Daily morning workflow — ergonomic options
 
-**Morning (1 command):**
+In increasing order of automation:
+
+### 1. Terminal one-liner
+
 ```bash
 python populate.py --routine
 ```
-Refreshes Market_Daily *and* every Ticker_*.xlsx in Drive. Open
-Market_Daily, glance at Market Regime + sector heatmaps + Summary
-(your ranked watchlist), read your prior journal entry, write today's
-situational + emotional notes.
+
+### 2. Double-click `morning.command` (Mac) / `morning.bat` (Windows)
+
+Both ship in the repo root. They:
+1. Activate the venv (creating it on first run)
+2. `git pull` for any updates
+3. Run `--routine`
+4. Open Market_Daily.xlsx automatically when done
+
+**First-time setup (Mac only):**
+```bash
+chmod +x morning.command analyze.command
+```
+Then right-click `morning.command` in Finder → Open. macOS will ask
+once whether to trust an unsigned script — say yes. From then on,
+double-click works normally.
+
+### 3. Set a watchlist in settings, double-click does everything
+
+Edit `settings.local.json`:
+
+```json
+"watchlist": ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN"],
+```
+
+Now `python populate.py --routine` (or the morning.command double-click):
+- Auto-creates a `Ticker_<SYM>.xlsx` for any watchlist ticker that
+  doesn't have one yet
+- Refreshes every existing Ticker file
+- Auto-fills the Daily Plan → Custom Watchlist heatmap rows with your
+  watchlist tickers and their %D / %5D / %YTD / Off-52w / RS-SPY / sparkline
+- Refreshes Market_Daily so Summary tab ranks your watchlist
+
+You never type a ticker again.
+
+### 4. Scheduled — runs even before you open the laptop
+
+Copy `scripts/com.investing.morning-routine.plist.example` to
+`~/Library/LaunchAgents/com.investing.morning-routine.plist`, edit the
+two paths near the top, then:
+```bash
+launchctl load ~/Library/LaunchAgents/com.investing.morning-routine.plist
+```
+
+Default schedule: weekdays at 7:00 AM. Logs to `/tmp/morning-routine.log`.
+
+### Ad-hoc ticker analysis
+
+Double-click `analyze.command` → enter ticker(s) in the dialog →
+workbook opens when ready. Or `python populate.py NVDA AAPL MSFT`.
+
+---
+
+After refresh, open Market_Daily, glance at Market Regime + sector
+heatmaps + Summary (your ranked watchlist), read your prior journal
+entry, write today's situational + emotional notes.
 
 **Ticker analysis (per name):**
 ```bash

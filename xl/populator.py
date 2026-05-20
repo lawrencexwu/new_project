@@ -1251,49 +1251,79 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     HIDDEN_DATA_COL_END = 59     # BG column
     daily_plan_sparklines: list[dict] = []
 
+    # Auto-fill the Custom Watchlist section with tickers from settings.watchlist
+    watchlist = config.get("watchlist", []) or []
+    if watchlist:
+        cw_anchor = find_section_anchor(
+            ws, "Custom Watchlist (25 rows, user-entered)"
+        )
+        if cw_anchor is not None:
+            for i, tkr in enumerate(watchlist[:25]):
+                ws.cell(row=cw_anchor + 2 + i, column=9, value=tkr.upper())
+                try:
+                    info = yfc.info(tkr, force=False)
+                    name = info.get("shortName") or info.get("longName") or ""
+                    ws.cell(row=cw_anchor + 2 + i, column=10, value=name)
+                except Exception:
+                    pass
+
+    from openpyxl.utils import get_column_letter as _col
+
+    def _process_heatmap_row(row: int, tkr: str) -> bool:
+        """Populate one row of a heatmap with %s + sparkline. Returns True on success."""
+        px = yfc.prices(tkr, period="2y", force=force)
+        close = _close_series(px)
+        if close is None or close.empty:
+            ws.cell(row=row, column=16, value="(no data)").font = Font(
+                name="Calibri", size=9, italic=True, color="9CA3AF")
+            return False
+        ws.cell(row=row, column=11, value=signals.pct_change(close, 1))
+        ws.cell(row=row, column=12, value=signals.pct_change(close, 5))
+        ws.cell(row=row, column=13, value=signals.pct_off_52w_high(close))
+        ytd = signals.ytd_change(yfc.prices(tkr, period="1y"))
+        ws.cell(row=row, column=14, value=ytd)
+        five_d = signals.pct_change(close, 5)
+        ws.cell(row=row, column=15,
+                value=(five_d - spy_5d) if five_d is not None else None)
+        # Belt + suspenders sparkline (Unicode in cell, native overlays)
+        last30 = close.tail(30).tolist()
+        spark_cell = ws.cell(row=row, column=16,
+                              value=block_sparkline(last30, width=20))
+        spark_cell.font = _SPARKLINE_FONT
+        for j, v in enumerate(last30):
+            ws.cell(row=row, column=HIDDEN_DATA_COL_START + j, value=float(v))
+        start_col = _col(HIDDEN_DATA_COL_START)
+        end_col = _col(HIDDEN_DATA_COL_START + len(last30) - 1)
+        daily_plan_sparklines.append({
+            "data_range": f"'Daily Plan'!{start_col}{row}:{end_col}{row}",
+            "target_cell": f"P{row}",
+        })
+        return True
+
     fetched_ok = 0
     fetch_failed = []
+
+    # Standard sector heatmaps
     for section_label, universe_key in _HEATMAP_SECTIONS.items():
         anchor = find_section_anchor(ws, section_label)
         if anchor is None:
             continue
-        tickers = universe.get(universe_key, [])
-        for i, tkr in enumerate(tickers):
-            row = anchor + 2 + i
-            px = yfc.prices(tkr, period="2y", force=force)
-            close = _close_series(px)
-            if close is None or close.empty:
+        for i, tkr in enumerate(universe.get(universe_key, [])):
+            ok = _process_heatmap_row(anchor + 2 + i, tkr)
+            if ok:
+                fetched_ok += 1
+            else:
                 fetch_failed.append(tkr)
-                # Mark the cell so the user can see this ticker didn't pull
-                ws.cell(row=row, column=16, value="(no data)").font = Font(
-                    name="Calibri", size=9, italic=True, color="9CA3AF")
-                continue
-            fetched_ok += 1
-            ws.cell(row=row, column=11, value=signals.pct_change(close, 1))
-            ws.cell(row=row, column=12, value=signals.pct_change(close, 5))
-            ws.cell(row=row, column=13, value=signals.pct_off_52w_high(close))
-            ytd = signals.ytd_change(yfc.prices(tkr, period="1y"))
-            ws.cell(row=row, column=14, value=ytd)
-            five_d = signals.pct_change(close, 5)
-            ws.cell(row=row, column=15,
-                    value=(five_d - spy_5d) if five_d is not None else None)
-            # Write Unicode-bar sparkline as cell value (always visible) AND
-            # set up native line sparkline that overlays this when Excel
-            # renders it. Belt + suspenders.
-            last30 = close.tail(30).tolist()
-            unicode_bars = block_sparkline(last30, width=20)
-            spark_cell = ws.cell(row=row, column=16, value=unicode_bars)
-            spark_cell.font = _SPARKLINE_FONT
-            # Hidden price data for the native sparkline
-            for j, v in enumerate(last30):
-                ws.cell(row=row, column=HIDDEN_DATA_COL_START + j, value=float(v))
-            from openpyxl.utils import get_column_letter as _col
-            start_col = _col(HIDDEN_DATA_COL_START)
-            end_col = _col(HIDDEN_DATA_COL_START + len(last30) - 1)
-            daily_plan_sparklines.append({
-                "data_range": f"'Daily Plan'!{start_col}{row}:{end_col}{row}",
-                "target_cell": f"P{row}",
-            })
+
+    # Custom Watchlist rows — same per-row processing
+    cw_anchor = find_section_anchor(ws, "Custom Watchlist (25 rows, user-entered)")
+    if cw_anchor is not None and watchlist:
+        for i, tkr in enumerate(watchlist[:25]):
+            ok = _process_heatmap_row(cw_anchor + 2 + i, tkr)
+            if ok:
+                fetched_ok += 1
+            else:
+                fetch_failed.append(tkr)
 
     if fetch_failed:
         print(f"  Daily Plan: {fetched_ok} ok, {len(fetch_failed)} failed: {fetch_failed}")

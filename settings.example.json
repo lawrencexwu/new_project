@@ -15,6 +15,7 @@
         "shortinterest": 14,
         "insider": 7
     },
+    "watchlist": [],
     "universe": {
         "sub_market": ["IVE", "IJS", "IJJ", "IJT", "IVW", "IJK"],
         "sub_sector_cw": ["XLE", "XLP", "XLV", "XLF", "XLRE", "XLU", "XLC", "SPY", "XLK", "XLI", "XLY", "XLB"],
