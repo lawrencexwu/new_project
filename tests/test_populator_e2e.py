@@ -278,6 +278,7 @@ def test_populate_positions_with_correlations(tmp_path, monkeypatch):
         return pd.DataFrame({"date": dates, "Close": closes, "ticker": ticker})
 
     monkeypatch.setattr(populator.yfc, "prices", fake_prices)
+    monkeypatch.setattr(populator.yfc, "calendar", lambda t, force=False: {})
     populator.populate_market_daily(template)
 
     wb2 = load_workbook(template)
@@ -318,6 +319,7 @@ def test_screener_flags_double_buy_signal(tmp_path, monkeypatch):
         return pd.DataFrame({"date": dates, "Close": closes, "ticker": ticker})
 
     monkeypatch.setattr(populator.yfc, "prices", fake_prices)
+    monkeypatch.setattr(populator.yfc, "calendar", lambda t, force=False: {})
     populator.populate_market_daily(template)
 
     wb2 = load_workbook(template)
@@ -328,6 +330,71 @@ def test_screener_flags_double_buy_signal(tmp_path, monkeypatch):
     assert scr.cell(row=4, column=4).value == "YES"
     # Row 5 should be empty (DOWN doesn't pass)
     assert scr.cell(row=5, column=1).value is None
+
+
+def test_summary_aggregates_ticker_files(tmp_path, monkeypatch):
+    """When Tickers/ contains multiple populated ticker workbooks, the
+    Summary tab on Market_Daily should aggregate them sorted by upside."""
+    import config as cfg
+    monkeypatch.setattr(cfg, "_SETTINGS", None)
+
+    # Build two minimal ticker files with different Cover values
+    template = tmp_path / "Ticker_TEMPLATE.xlsx"
+    build_workbooks.build_ticker_template(template)
+
+    def _make_ticker(out_path, ticker, upside, edf, fair_value, quality):
+        import shutil
+        shutil.copy(template, out_path)
+        wb = load_workbook(out_path)
+        cover = wb["Cover"]
+        populator.write_label_value(cover, "Ticker", ticker)
+        populator.write_label_value(cover, "Name", f"{ticker} Corp")
+        populator.write_label_value(cover, "Sector", "Tech")
+        populator.write_label_value(cover, "Price", 100.0)
+        populator.write_label_value(cover, "Fair Value (DCF)", fair_value)
+        populator.write_label_value(cover, "Upside %", upside)
+        populator.write_label_value(cover, "Margin of Safety", 0.2)
+        populator.write_label_value(cover, "Quality Score (avg)", quality)
+        populator.write_label_value(cover, "EDF 1y (KMV)", edf)
+        populator.write_label_value(cover, "Altman Z + Bucket", "2.5 (Grey)")
+        wb.save(out_path)
+
+    tickers_dir = tmp_path / "Tickers"
+    tickers_dir.mkdir()
+    _make_ticker(tickers_dir / "Ticker_HIGH.xlsx", "HIGH", 0.60, 0.02, 160.0, 8.5)
+    _make_ticker(tickers_dir / "Ticker_LOW.xlsx", "LOW", 0.10, 0.08, 110.0, 5.0)
+    _make_ticker(tickers_dir / "Ticker_MID.xlsx", "MID", 0.30, 0.04, 130.0, 7.0)
+
+    # Point config at tmp dir
+    monkeypatch.setattr(cfg, "load", lambda: {
+        "tickers_dir": tickers_dir,
+        "cache_dir": tmp_path / "Cache",
+        "archive_dir": tmp_path / "Archive",
+        "universe": {},
+        "cache_ttl_days": {},
+        "discount_rates": [0.04],
+        "terminal_multiples": [10.0],
+    })
+
+    market_path = tmp_path / "Market_Daily.xlsx"
+    build_workbooks.build_market_daily(market_path)
+
+    monkeypatch.setattr(populator.yfc, "prices",
+                        lambda t, period="2y", interval="1d", force=False: pd.DataFrame())
+    monkeypatch.setattr(populator.yfc, "calendar", lambda t, force=False: {})
+
+    populator.populate_market_daily(market_path)
+
+    wb = load_workbook(market_path)
+    summary = wb["Summary"]
+    # Sorted by upside descending: HIGH, MID, LOW
+    assert summary.cell(row=4, column=1).value == "HIGH"
+    assert summary.cell(row=5, column=1).value == "MID"
+    assert summary.cell(row=6, column=1).value == "LOW"
+    # Quality scores match
+    assert summary.cell(row=4, column=8).value == pytest.approx(8.5)
+    # EDF column populated
+    assert summary.cell(row=4, column=9).value == pytest.approx(0.02)
 
 
 def test_snapshot_to_archive(tmp_path):

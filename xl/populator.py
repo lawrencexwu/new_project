@@ -1123,6 +1123,8 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     ws = wb["Daily Plan"]
 
     _populate_positions(wb, force=force)
+    _populate_summary(wb)
+    _populate_earnings_calendar(wb, force=force)
 
     universe = config.get("universe", {})
 
@@ -1201,6 +1203,180 @@ def snapshot_to_archive(workbook_path: Path, archive_dir: Path | None = None) ->
     snapshot_path = archive_dir / snapshot_name
     shutil.copy(workbook_path, snapshot_path)
     return snapshot_path
+
+
+def _populate_summary(wb) -> None:
+    """Scan the configured tickers_dir for Ticker_*.xlsx files, read the
+    Cover-sheet headline tiles from each, and aggregate into the Summary
+    tab on Market_Daily."""
+    if "Summary" not in wb.sheetnames:
+        return
+    summary = wb["Summary"]
+
+    tickers_dir = config.get("tickers_dir")
+    if tickers_dir is None or not Path(tickers_dir).exists():
+        tickers_dir = Path(__file__).resolve().parent.parent / "build"
+    tickers_dir = Path(tickers_dir)
+
+    files = sorted(tickers_dir.glob("Ticker_*.xlsx"))
+    # Skip the template itself
+    files = [f for f in files if f.name != "Ticker_TEMPLATE.xlsx"]
+
+    # Clear existing summary rows
+    for r in range(4, 54):
+        for c in range(1, 14):
+            summary.cell(row=r, column=c).value = None
+
+    rows: list[dict] = []
+    for f in files:
+        try:
+            twb = load_workbook(f, data_only=True)
+        except Exception:
+            continue
+        if "Cover" not in twb.sheetnames:
+            continue
+        cover = twb["Cover"]
+        label_index = _index_labels(cover)
+
+        def _pair(label: str):
+            pos = label_index.get(label)
+            if pos is None:
+                return None
+            return cover.cell(row=pos[0], column=pos[1] + 1).value
+
+        rows.append({
+            "ticker": _pair("Ticker") or f.stem.replace("Ticker_", ""),
+            "name": _pair("Name") or "",
+            "sector": _pair("Sector") or "",
+            "price": _pair("Price"),
+            "fair_value": _pair("Fair Value (DCF)"),
+            "upside": _pair("Upside %"),
+            "mos": _pair("Margin of Safety"),
+            "quality": _pair("Quality Score (avg)"),
+            "edf": _pair("EDF 1y (KMV)"),
+            "altman": _pair("Altman Z + Bucket"),
+            "next_earnings": _pair("Next Earnings"),
+            "eps_rev_3m": _pair("3M EPS Revision"),
+            "source": f.name,
+        })
+
+    # Sort by upside descending, putting nulls last
+    def _sort_key(r):
+        v = r.get("upside")
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return (1, 0)
+        return (0, -float(v))
+    rows.sort(key=_sort_key)
+
+    for i, row in enumerate(rows[:50]):
+        r = 4 + i
+        summary.cell(row=r, column=1, value=row["ticker"])
+        summary.cell(row=r, column=2, value=row["name"])
+        summary.cell(row=r, column=3, value=row["sector"])
+        summary.cell(row=r, column=4, value=_to_number(row["price"]))
+        summary.cell(row=r, column=5, value=_to_number(row["fair_value"]))
+        summary.cell(row=r, column=6, value=_to_number(row["upside"]))
+        summary.cell(row=r, column=7, value=_to_number(row["mos"]))
+        summary.cell(row=r, column=8, value=_to_number(row["quality"]))
+        summary.cell(row=r, column=9, value=_to_number(row["edf"]))
+        # Altman is text like "2.85 (Safe)"; preserve as-is
+        summary.cell(row=r, column=10, value=row["altman"])
+        summary.cell(row=r, column=11, value=row["next_earnings"])
+        summary.cell(row=r, column=12, value=_to_number(row["eps_rev_3m"]))
+        summary.cell(row=r, column=13, value=row["source"])
+
+
+def _populate_earnings_calendar(wb, force: bool = False) -> None:
+    """Pull next-earnings dates for every ticker on the Custom Watchlist
+    + Positions + every Ticker_*.xlsx file. Sort by date, write to
+    Earnings Calendar tab."""
+    if "Earnings Calendar" not in wb.sheetnames:
+        return
+    ecw = wb["Earnings Calendar"]
+
+    candidates: set[str] = set()
+    if "Daily Plan" in wb.sheetnames:
+        dp = wb["Daily Plan"]
+        cw_anchor = find_section_anchor(
+            dp, "Custom Watchlist (25 rows, user-entered)"
+        )
+        if cw_anchor is not None:
+            for i in range(25):
+                row = cw_anchor + 2 + i
+                tkr = dp.cell(row=row, column=9).value
+                if tkr and str(tkr).strip():
+                    candidates.add(str(tkr).strip().upper())
+    if "Positions" in wb.sheetnames:
+        pos = wb["Positions"]
+        for r in range(4, 29):
+            tkr = pos.cell(row=r, column=1).value
+            if tkr and str(tkr).strip():
+                candidates.add(str(tkr).strip().upper())
+    if "Summary" in wb.sheetnames:
+        sm = wb["Summary"]
+        for r in range(4, 54):
+            tkr = sm.cell(row=r, column=1).value
+            if tkr and str(tkr).strip():
+                candidates.add(str(tkr).strip().upper())
+
+    # Clear existing rows
+    for r in range(4, 54):
+        for c in range(1, 7):
+            ecw.cell(row=r, column=c).value = None
+
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    cutoff = today + pd.Timedelta(days=60)
+    entries: list[dict] = []
+    for tkr in sorted(candidates):
+        cal = yfc.calendar(tkr, force=force)
+        if not cal:
+            continue
+        raw = cal.get("Earnings Date") or cal.get("earningsDate") or ""
+        date = pd.to_datetime(str(raw), errors="coerce")
+        if pd.isna(date):
+            continue
+        if date.tz is None:
+            date = date.tz_localize("UTC")
+        if date < today or date > cutoff:
+            continue
+        entries.append({
+            "date": date,
+            "ticker": tkr,
+            "days": int((date - today).days),
+        })
+
+    entries.sort(key=lambda e: e["date"])
+    for i, e in enumerate(entries[:50]):
+        r = 4 + i
+        ecw.cell(row=r, column=1, value=e["date"].strftime("%Y-%m-%d"))
+        ecw.cell(row=r, column=2, value=e["ticker"])
+        ecw.cell(row=r, column=4, value=e["days"])
+        ecw.cell(row=r, column=5, value="yfinance")
+
+
+def _index_labels(ws: Worksheet, cols: tuple[int, ...] = _DEFAULT_LABEL_COLS,
+                  max_row: int = 200) -> dict[str, tuple[int, int]]:
+    """Build a label → (row, col) map in one pass — fast when scanning many labels."""
+    out: dict[str, tuple[int, int]] = {}
+    for r in range(1, max_row + 1):
+        for c in cols:
+            v = ws.cell(row=r, column=c).value
+            if isinstance(v, str) and v and v not in out:
+                out[v] = (r, c)
+    return out
+
+
+def _to_number(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        return v
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _populate_screener(wb, force: bool = False) -> None:

@@ -244,6 +244,67 @@ def build_market_daily(out_path: Path) -> Path:
         c.alignment = S.CENTER
         c.border = S.BOX
 
+    # --- Watchlist Summary (aggregates Cover tiles from every Ticker_*.xlsx) ---
+    sws = wb.create_sheet("Summary")
+    _set_header(sws, "Watchlist Summary — aggregates Cover sheet from every Ticker workbook", 13)
+    _col_widths(sws, {1: 10, 2: 24, 3: 16, 4: 12, 5: 12, 6: 10, 7: 10, 8: 10, 9: 10, 10: 12, 11: 14, 12: 10, 13: 16})
+    headers = ["Ticker", "Name", "Sector", "Price", "Fair Value",
+               "Upside %", "MoS %", "Quality", "EDF", "Altman Z",
+               "Next Earnings", "3M EPS Rev", "Source File"]
+    for i, h in enumerate(headers):
+        c = sws.cell(row=3, column=i + 1, value=h)
+        c.fill = S.SUBSECTION_FILL
+        c.font = S.LABEL_FONT
+        c.alignment = S.CENTER
+        c.border = S.BOX
+    for r in range(4, 54):
+        for c in range(1, 14):
+            sws.cell(row=r, column=c).border = S.BOX
+        sws.cell(row=r, column=4).number_format = S.USD_FMT
+        sws.cell(row=r, column=5).number_format = S.USD_FMT
+        sws.cell(row=r, column=6).number_format = S.PCT_FMT
+        sws.cell(row=r, column=7).number_format = S.PCT_FMT
+        sws.cell(row=r, column=8).number_format = S.NUM_FMT
+        sws.cell(row=r, column=9).number_format = S.PCT_FMT
+        sws.cell(row=r, column=10).number_format = S.NUM_FMT
+        sws.cell(row=r, column=12).number_format = S.PCT_FMT
+
+    # Conditional formatting on upside col (F), MoS col (G), and Quality (H)
+    rule_pos = ColorScaleRule(
+        start_type="num", start_value=-0.5, start_color="EF4444",
+        mid_type="num", mid_value=0, mid_color="FFFFFF",
+        end_type="num", end_value=0.5, end_color="10B981",
+    )
+    sws.conditional_formatting.add("F4:G53", rule_pos)
+    rule_quality = ColorScaleRule(
+        start_type="num", start_value=0, start_color="EF4444",
+        mid_type="num", mid_value=5, mid_color="FBBF24",
+        end_type="num", end_value=10, end_color="10B981",
+    )
+    sws.conditional_formatting.add("H4:H53", rule_quality)
+    rule_edf = ColorScaleRule(
+        start_type="num", start_value=0, start_color="10B981",
+        mid_type="num", mid_value=0.05, mid_color="FBBF24",
+        end_type="num", end_value=0.2, end_color="EF4444",
+    )
+    sws.conditional_formatting.add("I4:I53", rule_edf)
+
+    # --- Earnings Calendar (next 60 days, watchlist + positions) ---
+    ecw = wb.create_sheet("Earnings Calendar")
+    _set_header(ecw, "Earnings Calendar — next 60 days, sorted by date", 6)
+    _col_widths(ecw, {1: 12, 2: 10, 3: 24, 4: 14, 5: 12, 6: 14})
+    headers = ["Date", "Ticker", "Name", "Days From Now", "Source", "Note"]
+    for i, h in enumerate(headers):
+        c = ecw.cell(row=3, column=i + 1, value=h)
+        c.fill = S.SUBSECTION_FILL
+        c.font = S.LABEL_FONT
+        c.alignment = S.CENTER
+        c.border = S.BOX
+    for r in range(4, 54):
+        for c in range(1, 7):
+            ecw.cell(row=r, column=c).border = S.BOX
+        ecw.cell(row=r, column=4).number_format = S.INT_FMT
+
     # --- Lessons Learned ---
     lws = wb.create_sheet("Lessons")
     _set_header(lws, "Lessons Learned (append-only)", 8)
