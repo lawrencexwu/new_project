@@ -29,8 +29,11 @@ RIGHT = Alignment(horizontal="right", vertical="center")
 TOP_LEFT = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
 
-PCT_FMT = "0.0%;[Red]-0.0%"
-NUM_FMT = "#,##0.00;[Red]-#,##0.00"
-INT_FMT = "#,##0;[Red]-#,##0"
+# Number formats — no [Red] negative coloring: the conditional-format
+# color scales already convey good/bad, and red font on a red fill is
+# illegible. Negatives just get a leading minus sign.
+PCT_FMT = "0.0%"
+NUM_FMT = "#,##0.00"
+INT_FMT = "#,##0"
 SCORE_FMT = "0"
-USD_FMT = "$#,##0.00;[Red]-$#,##0.00"
+USD_FMT = "$#,##0.00"

@@ -46,21 +46,3 @@ def refresh_ticker(force: bool = False):
     book.close()
     populator.populate_ticker(path, path, ticker, force=force)
     app.books.open(str(path))
-
-
-def snapshot_to_journal():
-    """Append current Daily Plan state to Journal Log (in-place via xlwings)."""
-    from datetime import datetime
-
-    book = _book()
-    plan = book.sheets["Daily Plan"]
-    log = book.sheets["Journal Log"]
-    next_row = log.range("A" + str(log.cells.last_cell.row)).end("up").row + 1
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    regime = None
-    for cell in plan.range("A1:A300"):
-        if cell.value == "Market Regime:":
-            regime = plan.cells(cell.row, 2).value
-            break
-    log.cells(next_row, 1).value = today
-    log.cells(next_row, 2).value = regime or ""

@@ -115,7 +115,20 @@ def _inject_into_sheet_xml(sheet_xml_bytes: bytes,
     when used together.
     """
     parser = etree.XMLParser(remove_blank_text=False)
-    root = etree.fromstring(sheet_xml_bytes, parser)
+    old_root = etree.fromstring(sheet_xml_bytes, parser)
+
+    # openpyxl omits xmlns:r on the worksheet root; xlsxwriter (whose
+    # sparkline files Excel accepts) always declares it. Rebuild the root
+    # with xmlns:r added. extend(list(...)) materializes the children
+    # eagerly so lxml's move-on-append doesn't corrupt iteration.
+    if old_root.nsmap.get("r") == _NS_REL:
+        root = old_root
+    else:
+        root = etree.Element(f"{{{_NS_MAIN}}}worksheet",
+                             nsmap={None: _NS_MAIN, "r": _NS_REL})
+        for k, v in old_root.attrib.items():
+            root.set(k, v)
+        root.extend(list(old_root))
 
     # Build the new extension element with namespaces declared inline.
     ext = etree.SubElement(

@@ -298,17 +298,6 @@ def build_market_daily(out_path: Path) -> Path:
         c.alignment = S.CENTER
         c.border = S.BOX
 
-    # --- Journal Log ---
-    jws = wb.create_sheet("Journal Log")
-    _set_header(jws, "Daily Journal Log (append-only)", 8)
-    _col_widths(jws, {1: 12, 2: 16, 3: 14, 4: 60, 5: 60})
-    for i, h in enumerate(["Date", "Regime", "Key Trades", "Situational Notes", "Emotional Notes"]):
-        c = jws.cell(row=3, column=i + 1, value=h)
-        c.fill = S.SUBSECTION_FILL
-        c.font = S.LABEL_FONT
-        c.alignment = S.CENTER
-        c.border = S.BOX
-
     # --- Watchlist Summary (aggregates Cover tiles from every Ticker_*.xlsx) ---
     sws = wb.create_sheet("Summary")
     _set_header(sws, "Watchlist Summary — aggregates Cover sheet from every Ticker workbook", 14)
@@ -690,34 +679,41 @@ def build_ticker_template(out_path: Path) -> Path:
     ws_a.merge_cells(start_row=chart_anchor_row, start_column=1,
                      end_row=chart_anchor_row, end_column=14)
 
-    def _quarterly_chart(chart_cls, title, fin_row, anchor_cell, color=None):
+    def _quarterly_chart(chart_cls, title, fin_row, anchor_cell):
         chart = chart_cls()
         chart.title = title
-        chart.y_axis.title = None
-        chart.x_axis.title = None
-        chart.legend = None
-        chart.height = 7  # cm
-        chart.width = 15
-        data = Reference(fws, min_col=2, max_col=13,
+        chart.height = 7.5   # cm
+        chart.width = 11.5
+        chart.style = 10
+        # Axes must be explicitly un-deleted or openpyxl hides them.
+        chart.x_axis.delete = False
+        chart.y_axis.delete = False
+        chart.x_axis.title = "Quarter"
+        chart.y_axis.title = "USD"
+        # min_col=1 includes the Fin Stat row label so the series is named.
+        data = Reference(fws, min_col=1, max_col=13,
                          min_row=fin_row, max_row=fin_row)
+        chart.add_data(data, titles_from_data=True, from_rows=True)
         cats = Reference(fws, min_col=2, max_col=13,
                          min_row=is_period_row, max_row=is_period_row)
-        chart.add_data(data, titles_from_data=False)
         chart.set_categories(cats)
+        if chart.legend is not None:
+            chart.legend.position = "b"
         ws_a.add_chart(chart, anchor_cell)
 
+    # 2x2 grid — left column at A, right column at J (no overlap at 11.5cm wide)
     _quarterly_chart(BarChart, "Operating Income (EBIT)",
                      is_row_of["Operating Income (EBIT)"],
                      f"A{chart_anchor_row + 1}")
     _quarterly_chart(LineChart, "Revenue",
                      is_row_of["Revenue"],
-                     f"H{chart_anchor_row + 1}")
+                     f"J{chart_anchor_row + 1}")
     _quarterly_chart(BarChart, "Net Income",
                      is_row_of["Net Income"],
-                     f"A{chart_anchor_row + 16}")
+                     f"A{chart_anchor_row + 17}")
     _quarterly_chart(LineChart, "Pretax Income",
                      is_row_of["Pretax Income"],
-                     f"H{chart_anchor_row + 16}")
+                     f"J{chart_anchor_row + 17}")
 
     # --- Valuation ---
     vws = wb.create_sheet("Valuation")

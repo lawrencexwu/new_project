@@ -1287,11 +1287,11 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
         five_d = signals.pct_change(close, 5)
         ws.cell(row=row, column=15,
                 value=(five_d - spy_5d) if five_d is not None else None)
-        # Belt + suspenders sparkline (Unicode in cell, native overlays)
+        # Native line sparkline: 30 closes go into hidden cols 30-59, the
+        # target cell P{row} is left EMPTY so nothing competes with the
+        # sparkline Excel draws there.
         last30 = close.tail(30).tolist()
-        spark_cell = ws.cell(row=row, column=16,
-                              value=block_sparkline(last30, width=20))
-        spark_cell.font = _SPARKLINE_FONT
+        ws.cell(row=row, column=16).value = None
         for j, v in enumerate(last30):
             ws.cell(row=row, column=HIDDEN_DATA_COL_START + j, value=float(v))
         start_col = _col(HIDDEN_DATA_COL_START)
@@ -1548,16 +1548,24 @@ def _populate_earnings_calendar(wb, force: bool = False) -> None:
         if not cal:
             continue
         raw = cal.get("Earnings Date") or cal.get("earningsDate") or ""
-        date = pd.to_datetime(str(raw), errors="coerce")
+        date_str = _format_earnings_date(raw)
+        date = pd.to_datetime(date_str, errors="coerce")
         if pd.isna(date):
             continue
         if date.tz is None:
             date = date.tz_localize("UTC")
         if date < today or date > cutoff:
             continue
+        name = ""
+        try:
+            info = yfc.info(tkr, force=False)
+            name = info.get("shortName") or info.get("longName") or ""
+        except Exception:
+            pass
         entries.append({
             "date": date,
             "ticker": tkr,
+            "name": name,
             "days": int((date - today).days),
         })
 
@@ -1566,6 +1574,7 @@ def _populate_earnings_calendar(wb, force: bool = False) -> None:
         r = 4 + i
         ecw.cell(row=r, column=1, value=e["date"].strftime("%Y-%m-%d"))
         ecw.cell(row=r, column=2, value=e["ticker"])
+        ecw.cell(row=r, column=3, value=e["name"])
         ecw.cell(row=r, column=4, value=e["days"])
         ecw.cell(row=r, column=5, value="yfinance")
 
@@ -1836,7 +1845,7 @@ def _populate_screener(wb, force: bool = False) -> None:
         for src_col, dst_col in ((4, 5), (6, 6), (5, 7)):
             v = watchlist.cell(row=r, column=src_col).value
             cell = screener.cell(row=write_row, column=dst_col, value=v)
-            cell.number_format = "0.0%;[Red]-0.0%"
+            cell.number_format = "0.0%"
         write_row += 1
 
 
