@@ -672,48 +672,14 @@ def build_ticker_template(out_path: Path) -> Path:
     )
     ws_a.conditional_formatting.add(score_range, rule)
 
-    # Charts section — 2x2 grid at the bottom of Analysis, referencing Fin Stat
+    # Charts section header — the chart objects themselves are created by
+    # the populator (xl.populator._add_analysis_charts) so chart fixes take
+    # effect on the next `populate` without needing a template rebuild.
     chart_anchor_row = ra + 2
     ws_a.cell(row=chart_anchor_row, column=1, value="Charts").font = S.SECTION_FONT
     ws_a.cell(row=chart_anchor_row, column=1).fill = S.SECTION_FILL
     ws_a.merge_cells(start_row=chart_anchor_row, start_column=1,
                      end_row=chart_anchor_row, end_column=14)
-
-    def _quarterly_chart(chart_cls, title, fin_row, anchor_cell):
-        chart = chart_cls()
-        chart.title = title
-        chart.height = 7.5   # cm
-        chart.width = 11.5
-        chart.style = 10
-        # Axes must be explicitly un-deleted or openpyxl hides them.
-        chart.x_axis.delete = False
-        chart.y_axis.delete = False
-        chart.x_axis.title = "Quarter"
-        chart.y_axis.title = "USD"
-        # min_col=1 includes the Fin Stat row label so the series is named.
-        data = Reference(fws, min_col=1, max_col=13,
-                         min_row=fin_row, max_row=fin_row)
-        chart.add_data(data, titles_from_data=True, from_rows=True)
-        cats = Reference(fws, min_col=2, max_col=13,
-                         min_row=is_period_row, max_row=is_period_row)
-        chart.set_categories(cats)
-        if chart.legend is not None:
-            chart.legend.position = "b"
-        ws_a.add_chart(chart, anchor_cell)
-
-    # 2x2 grid — left column at A, right column at J (no overlap at 11.5cm wide)
-    _quarterly_chart(BarChart, "Operating Income (EBIT)",
-                     is_row_of["Operating Income (EBIT)"],
-                     f"A{chart_anchor_row + 1}")
-    _quarterly_chart(LineChart, "Revenue",
-                     is_row_of["Revenue"],
-                     f"J{chart_anchor_row + 1}")
-    _quarterly_chart(BarChart, "Net Income",
-                     is_row_of["Net Income"],
-                     f"A{chart_anchor_row + 17}")
-    _quarterly_chart(LineChart, "Pretax Income",
-                     is_row_of["Pretax Income"],
-                     f"J{chart_anchor_row + 17}")
 
     # --- Valuation ---
     vws = wb.create_sheet("Valuation")

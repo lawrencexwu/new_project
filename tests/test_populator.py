@@ -254,10 +254,12 @@ def test_block_sparkline_resamples_when_longer_than_width():
     assert out[-1] == "█"
 
 
-def test_template_has_analysis_charts(template_path):
+def test_template_has_charts_section(template_path):
+    # Charts are created by the populator (openpyxl mangles charts on a
+    # load->save round-trip), so the template just carries the header.
     wb = load_workbook(template_path)
     ws = wb["Analysis"]
-    assert len(ws._charts) == 4, f"expected 4 charts on Analysis, got {len(ws._charts)}"
+    assert populator.find_label_row(ws, "Charts") is not None
 
 
 def test_config_get_watchlist_reads_file(tmp_path, monkeypatch):

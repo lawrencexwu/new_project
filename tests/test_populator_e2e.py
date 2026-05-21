@@ -192,8 +192,14 @@ def test_populate_ticker_end_to_end(synthetic_data, tmp_path):
                       if fs.cell(row=rev_row, column=c).value is not None]
     assert len(populated_cols) >= 4
 
-    # Analysis — per-quarter values across cols 2..9 (8 quarters of fake data)
+    # Analysis — 4 charts created by the populator
     an = wb["Analysis"]
+    assert len(an._charts) == 4, f"expected 4 Analysis charts, got {len(an._charts)}"
+    # Each chart should be a single series (from_rows), not 12 stray series
+    for ch in an._charts:
+        assert len(ch.series) == 1
+
+    # Analysis — per-quarter values across cols 2..9 (8 quarters of fake data)
     cr_row = populator.find_label_row(an, "Current Ratio (Liquidity)")
     populated = [an.cell(row=cr_row, column=c).value for c in range(2, 10)
                  if an.cell(row=cr_row, column=c).value is not None]

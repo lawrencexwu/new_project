@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -20,6 +21,28 @@ from openpyxl.worksheet.worksheet import Worksheet
 _BOLD_FONT = Font(name="Calibri", size=10, bold=True)
 _SPARKLINE_FONT = Font(name="Consolas", size=11)
 _BLOCK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def winloss_sparkline(closes, width: int = 24) -> str:
+    """Win/loss sparkline from a close-price series. Each trading day is an
+    up-mark (▀) for a gain, a down-mark (▄) for a loss, or a dash for flat.
+    Renders the most recent `width` days. Reliable plain-text — shows in
+    every spreadsheet app, unlike native Excel sparkline extensions."""
+    vals = [float(v) for v in (closes or [])
+            if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    if len(vals) < 2:
+        return ""
+    changes = [vals[i] - vals[i - 1] for i in range(1, len(vals))]
+    changes = changes[-width:]
+    out = []
+    for ch in changes:
+        if ch > 0:
+            out.append("▀")
+        elif ch < 0:
+            out.append("▄")
+        else:
+            out.append("─")
+    return "".join(out)
 
 
 def block_sparkline(values, width: int = 20) -> str:
@@ -51,7 +74,9 @@ from compute import altman, capm, dcf, hillegeist, kmv, merton, multiples, ratio
 from data import edgar_client as edgar
 from data import fred_client as fc
 from data import yfinance_client as yfc
-from xl import sparkline_injector
+# sparkline_injector kept for reference; native Excel sparklines proved
+# unreliable when injected post-save, so the Trend columns use plain-text
+# win/loss sparklines that render everywhere.
 
 
 ASSET_LIGHT_INDUSTRY_HINTS = (
@@ -118,6 +143,56 @@ def write_label_value(ws: Worksheet, label: str, value: Any,
         return
     row, col = found
     set_value(ws, row, col + value_col_offset, value)
+
+
+# -----------------------------------------------------------
+# Analysis-tab charts (created at populate time, not in the template —
+# openpyxl mangles charts on a load->save round-trip)
+# -----------------------------------------------------------
+
+def _add_analysis_charts(wb) -> None:
+    """Create the 4 quarterly charts on the Analysis tab. Called by
+    populate_ticker after Fin Stat is in place."""
+    if "Analysis" not in wb.sheetnames or "Fin Stat" not in wb.sheetnames:
+        return
+    ws_a = wb["Analysis"]
+    fin = wb["Fin Stat"]
+
+    is_section = find_label_row(fin, "Income Statement (Quarterly)")
+    charts_row = find_label_row(ws_a, "Charts")
+    if is_section is None or charts_row is None:
+        return
+    period_row = is_section + 1
+
+    specs = [
+        (BarChart, "Operating Income (EBIT)", f"A{charts_row + 1}"),
+        (LineChart, "Revenue", f"J{charts_row + 1}"),
+        (BarChart, "Net Income", f"A{charts_row + 17}"),
+        (LineChart, "Pretax Income", f"J{charts_row + 17}"),
+    ]
+    for chart_cls, line_label, anchor in specs:
+        fin_row = find_label_row(fin, line_label)
+        if fin_row is None:
+            continue
+        chart = chart_cls()
+        chart.title = line_label
+        chart.height = 7.5
+        chart.width = 11.5
+        chart.style = 10
+        chart.x_axis.delete = False
+        chart.y_axis.delete = False
+        chart.x_axis.title = "Quarter"
+        chart.y_axis.title = "USD"
+        # min_col=1 includes the Fin Stat row label → names the series
+        data = Reference(fin, min_col=1, max_col=13,
+                         min_row=fin_row, max_row=fin_row)
+        chart.add_data(data, titles_from_data=True, from_rows=True)
+        cats = Reference(fin, min_col=2, max_col=13,
+                         min_row=period_row, max_row=period_row)
+        chart.set_categories(cats)
+        if chart.legend is not None:
+            chart.legend.position = "b"
+        ws_a.add_chart(chart, anchor)
 
 
 # -----------------------------------------------------------
@@ -263,6 +338,7 @@ def populate_ticker(template_path: Path, output_path: Path, ticker: str,
 
     market = _populate_market(wb, ticker, info, px_df, rf, beta_val, mrp)
     _populate_fin_stat(wb, is_q, bs_q, cf_q)
+    _add_analysis_charts(wb)
     analysis_results = _populate_analysis(wb, is_q, bs_q, cf_q, asset_light=asset_light)
     _populate_owner_earnings(wb, is_q, cf_q)
     _populate_multiples_band(wb, is_q, bs_q, cf_q, px_df, market)
@@ -1229,12 +1305,8 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     wb = load_workbook(workbook_path)
     ws = wb["Daily Plan"]
 
-    # Aggregate sparkline specs across all populator subroutines, inject
-    # post-save in one pass.
-    sparkline_specs: dict[str, list[dict]] = {}
-
-    _populate_positions(wb, force=force, sparkline_specs=sparkline_specs)
-    _populate_summary(wb, sparkline_specs=sparkline_specs)
+    _populate_positions(wb, force=force)
+    _populate_summary(wb)
     _populate_earnings_calendar(wb, force=force)
     _populate_watchlist_sheet(wb, force=force)
 
@@ -1244,13 +1316,6 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     spy = yfc.prices("SPY", period="6mo", force=force)
     spy_close = _close_series(spy)
     spy_5d = signals.pct_change(spy_close, 5) or 0.0
-
-    # Sparklines for Daily Plan heatmaps. Data is written into hidden
-    # cells (cols 30-59 = 30 days of closes) and a native Excel line
-    # sparkline is injected post-save referencing those cells.
-    HIDDEN_DATA_COL_START = 30  # AD column
-    HIDDEN_DATA_COL_END = 59     # BG column
-    daily_plan_sparklines: list[dict] = []
 
     # Auto-fill the Custom Watchlist section with the first 25 watchlist
     # tickers (the full list lives on the dedicated Watchlist tab).
@@ -1269,10 +1334,9 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
                 except Exception:
                     pass
 
-    from openpyxl.utils import get_column_letter as _col
-
     def _process_heatmap_row(row: int, tkr: str) -> bool:
-        """Populate one row of a heatmap with %s + sparkline. Returns True on success."""
+        """Populate one row of a heatmap with %s + win/loss sparkline.
+        Returns True on success."""
         px = yfc.prices(tkr, period="2y", force=force)
         close = _close_series(px)
         if close is None or close.empty:
@@ -1287,19 +1351,9 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
         five_d = signals.pct_change(close, 5)
         ws.cell(row=row, column=15,
                 value=(five_d - spy_5d) if five_d is not None else None)
-        # Native line sparkline: 30 closes go into hidden cols 30-59, the
-        # target cell P{row} is left EMPTY so nothing competes with the
-        # sparkline Excel draws there.
-        last30 = close.tail(30).tolist()
-        ws.cell(row=row, column=16).value = None
-        for j, v in enumerate(last30):
-            ws.cell(row=row, column=HIDDEN_DATA_COL_START + j, value=float(v))
-        start_col = _col(HIDDEN_DATA_COL_START)
-        end_col = _col(HIDDEN_DATA_COL_START + len(last30) - 1)
-        daily_plan_sparklines.append({
-            "data_range": f"'Daily Plan'!{start_col}{row}:{end_col}{row}",
-            "target_cell": f"P{row}",
-        })
+        spark = ws.cell(row=row, column=16,
+                        value=winloss_sparkline(close.tail(31).tolist()))
+        spark.font = _SPARKLINE_FONT
         return True
 
     fetched_ok = 0
@@ -1332,11 +1386,6 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     else:
         print(f"  Daily Plan: {fetched_ok} tickers ok")
 
-    # Hide the data columns
-    from openpyxl.utils import get_column_letter as _col
-    for c in range(HIDDEN_DATA_COL_START, HIDDEN_DATA_COL_END + 1):
-        ws.column_dimensions[_col(c)].hidden = True
-
     # Section 1 booleans
     if spy_close is not None and not spy_close.empty:
         anchor = find_section_anchor(ws, "1. Market Trend")
@@ -1356,18 +1405,10 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     # Macro tab: Treasury curve + indicators + FOMC calendar
     _populate_macro(wb)
 
-    if daily_plan_sparklines:
-        sparkline_specs["Daily Plan"] = daily_plan_sparklines
-
     for sheet_name in wb.sheetnames:
         autofit_columns(wb[sheet_name])
 
     wb.save(workbook_path)
-
-    # Inject native Excel line sparklines into the saved file
-    if sparkline_specs:
-        sparkline_injector.inject_line_sparklines(workbook_path, sparkline_specs)
-
     return workbook_path
 
 
@@ -1390,7 +1431,7 @@ def snapshot_to_archive(workbook_path: Path, archive_dir: Path | None = None) ->
     return snapshot_path
 
 
-def _populate_summary(wb, sparkline_specs: dict | None = None) -> None:
+def _populate_summary(wb) -> None:
     """Scan the configured tickers_dir for Ticker_*.xlsx files, read the
     Cover-sheet headline tiles from each, and aggregate into the Summary
     tab on Market_Daily."""
@@ -1469,37 +1510,19 @@ def _populate_summary(wb, sparkline_specs: dict | None = None) -> None:
         summary.cell(row=r, column=11, value=row["next_earnings"])
         summary.cell(row=r, column=12, value=_to_number(row["eps_rev_3m"]))
         summary.cell(row=r, column=13, value=row["source"])
-        # Belt + suspenders sparkline (Unicode + native overlay)
+        # Win/loss sparkline from the trailing month of closes
         try:
             px = yfc.prices(row["ticker"], period="3mo")
             close = _close_series(px)
             if close is not None and not close.empty:
-                from openpyxl.utils import get_column_letter as _col
-                last30 = close.tail(30).tolist()
                 cell = summary.cell(row=r, column=14,
-                                    value=block_sparkline(last30, width=20))
+                                    value=winloss_sparkline(close.tail(31).tolist()))
                 cell.font = _SPARKLINE_FONT
-                if sparkline_specs is not None:
-                    HIDDEN_START = 20
-                    for j, v in enumerate(last30):
-                        summary.cell(row=r, column=HIDDEN_START + j,
-                                     value=float(v))
-                    start_col = _col(HIDDEN_START)
-                    end_col = _col(HIDDEN_START + len(last30) - 1)
-                    sparkline_specs.setdefault("Summary", []).append({
-                        "data_range": f"Summary!{start_col}{r}:{end_col}{r}",
-                        "target_cell": f"N{r}",
-                    })
             else:
                 summary.cell(row=r, column=14, value="(no data)").font = Font(
                     name="Calibri", size=9, italic=True, color="9CA3AF")
         except Exception:
             pass
-
-    # Hide the data columns once
-    from openpyxl.utils import get_column_letter as _col
-    for c in range(20, 50):
-        summary.column_dimensions[_col(c)].hidden = True
 
 
 def _populate_earnings_calendar(wb, force: bool = False) -> None:
@@ -1709,7 +1732,7 @@ def _populate_watchlist_sheet(wb, force: bool = False) -> None:
         ws.cell(row=r, column=8, value="YES" if is_daily else "NO")
         ws.cell(row=r, column=9, value="YES" if is_weekly else "NO")
         spark = ws.cell(row=r, column=10,
-                        value=block_sparkline(close.tail(30).tolist(), width=20))
+                        value=winloss_sparkline(close.tail(31).tolist()))
         spark.font = _SPARKLINE_FONT
 
         # Breadth tallies
@@ -1849,8 +1872,7 @@ def _populate_screener(wb, force: bool = False) -> None:
         write_row += 1
 
 
-def _populate_positions(wb, force: bool = False,
-                        sparkline_specs: dict | None = None) -> None:
+def _populate_positions(wb, force: bool = False) -> None:
     """Read tickers + shares + cost basis (rows 4-28), compute current
     value, P&L, weights, and the pairwise correlation matrix."""
     if "Positions" not in wb.sheetnames:
@@ -1885,9 +1907,7 @@ def _populate_positions(wb, force: bool = False,
         price_data[p["ticker"]] = close
         current_prices[p["ticker"]] = float(close.iloc[-1])
 
-    # Write per-position rows; hidden 30-day price data lives in cols 15-44
-    HIDDEN_START = 15
-    from openpyxl.utils import get_column_letter as _col
+    # Write per-position rows
     total_value = 0.0
     for p in positions:
         cp = current_prices.get(p["ticker"])
@@ -1901,30 +1921,14 @@ def _populate_positions(wb, force: bool = False,
             if p["shares"] * p["cost"] > 0:
                 ws.cell(row=p["row"], column=8,
                         value=gain / (p["shares"] * p["cost"]))
-            # Belt + suspenders sparkline: Unicode bars in the cell as a
-            # fallback, native line sparkline overlays when Excel renders.
             close = price_data.get(p["ticker"])
             if close is not None:
-                last30 = close.tail(30).tolist()
                 spark_cell = ws.cell(row=p["row"], column=10,
-                                     value=block_sparkline(last30, width=20))
+                                     value=winloss_sparkline(close.tail(31).tolist()))
                 spark_cell.font = _SPARKLINE_FONT
-                if sparkline_specs is not None:
-                    for j, v in enumerate(last30):
-                        ws.cell(row=p["row"], column=HIDDEN_START + j,
-                                value=float(v))
-                    start_col = _col(HIDDEN_START)
-                    end_col = _col(HIDDEN_START + len(last30) - 1)
-                    sparkline_specs.setdefault("Positions", []).append({
-                        "data_range": f"Positions!{start_col}{p['row']}:{end_col}{p['row']}",
-                        "target_cell": f"J{p['row']}",
-                    })
             else:
                 ws.cell(row=p["row"], column=10, value="(no data)").font = Font(
                     name="Calibri", size=9, italic=True, color="9CA3AF")
-
-    for c in range(HIDDEN_START, HIDDEN_START + 30):
-        ws.column_dimensions[_col(c)].hidden = True
 
     # Write weights and total
     if total_value > 0:
