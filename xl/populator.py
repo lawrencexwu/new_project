@@ -1353,18 +1353,8 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     # Screener: scan custom watchlist for names where both daily + weekly buy
     _populate_screener(wb, force=force)
 
-    # Macro tab from FRED (only if API key set)
-    if config.get("fred_api_key"):
-        mws = wb["Macro"]
-        for label, code in (("3M", "DGS3MO"), ("2Y", "DGS2"),
-                            ("5Y", "DGS5"), ("10Y", "DGS10"), ("30Y", "DGS30"),
-                            ("2s10s", "T10Y2Y"), ("3M10Y", "T10Y3M"),
-                            ("Fed Funds Effective", "DFF"),
-                            ("Unemployment", "UNRATE")):
-            row = find_label_row(mws, label)
-            if row is not None:
-                v = fc.latest(code)
-                mws.cell(row=row, column=2, value=(v / 100.0) if v is not None else None)
+    # Macro tab: Treasury curve + indicators + FOMC calendar
+    _populate_macro(wb)
 
     if daily_plan_sparklines:
         sparkline_specs["Daily Plan"] = daily_plan_sparklines
@@ -1665,8 +1655,8 @@ def _to_number(v):
 
 
 def _populate_watchlist_sheet(wb, force: bool = False) -> None:
-    """Fill the Watchlist tab — one row per ticker from watchlist.txt, with
-    %D / %5D / off-52w / YTD / RS-SPY / buy signals / Unicode sparkline."""
+    """Fill the Watchlist tab — one row per ticker from watchlist.txt — and
+    compute the Breadth tab metrics from the same fetched price data."""
     if "Watchlist" not in wb.sheetnames:
         return
     ws = wb["Watchlist"]
@@ -1680,6 +1670,10 @@ def _populate_watchlist_sheet(wb, force: bool = False) -> None:
 
     ok = 0
     failed = 0
+    # Breadth accumulators
+    above_50 = above_200 = new_highs = new_lows = 0
+    advancers = decliners = daily_buys = weekly_buys = 0
+
     for i, tkr in enumerate(tickers[:300]):
         r = 4 + i
         ws.cell(row=r, column=1, value=tkr)
@@ -1693,22 +1687,123 @@ def _populate_watchlist_sheet(wb, force: bool = False) -> None:
             c.font = Font(name="Calibri", size=9, italic=True, color="9CA3AF")
             continue
         ok += 1
-        ws.cell(row=r, column=3, value=signals.pct_change(close, 1))
+        day_chg = signals.pct_change(close, 1)
+        ws.cell(row=r, column=3, value=day_chg)
         ws.cell(row=r, column=4, value=signals.pct_change(close, 5))
         ws.cell(row=r, column=5, value=signals.pct_off_52w_high(close))
         ws.cell(row=r, column=6, value=signals.ytd_change(px))
         five_d = signals.pct_change(close, 5)
         ws.cell(row=r, column=7,
                 value=(five_d - spy_5d) if five_d is not None else None)
-        ws.cell(row=r, column=8,
-                value="YES" if signals.daily_buy_signal(close) else "NO")
-        ws.cell(row=r, column=9,
-                value="YES" if signals.weekly_buy_signal(close) else "NO")
+        is_daily = signals.daily_buy_signal(close)
+        is_weekly = signals.weekly_buy_signal(close)
+        ws.cell(row=r, column=8, value="YES" if is_daily else "NO")
+        ws.cell(row=r, column=9, value="YES" if is_weekly else "NO")
         spark = ws.cell(row=r, column=10,
                         value=block_sparkline(close.tail(30).tolist(), width=20))
         spark.font = _SPARKLINE_FONT
 
+        # Breadth tallies
+        last = float(close.iloc[-1])
+        if len(close) >= 50 and last > close.tail(50).mean():
+            above_50 += 1
+        if len(close) >= 200 and last > close.tail(200).mean():
+            above_200 += 1
+        window = close.tail(252)
+        if last >= window.max() * 0.999:
+            new_highs += 1
+        if last <= window.min() * 1.001:
+            new_lows += 1
+        if day_chg is not None and day_chg > 0:
+            advancers += 1
+        elif day_chg is not None and day_chg < 0:
+            decliners += 1
+        if is_daily:
+            daily_buys += 1
+        if is_weekly:
+            weekly_buys += 1
+
     print(f"  Watchlist: {ok} ok, {failed} no-data ({len(tickers)} total)")
+
+    # Write the Breadth tab
+    if "Breadth" in wb.sheetnames and ok > 0:
+        bws = wb["Breadth"]
+        ad_ratio = (advancers / decliners) if decliners else None
+        breadth = {
+            "Tickers with data": ok,
+            "% above 50-DMA": above_50 / ok,
+            "% above 200-DMA": above_200 / ok,
+            "New 52-week Highs": new_highs,
+            "New 52-week Lows": new_lows,
+            "Advancers (today)": advancers,
+            "Decliners (today)": decliners,
+            "Advance/Decline ratio": ad_ratio,
+            "% with Daily Buy Signal": daily_buys / ok,
+            "% with Weekly Buy Signal": weekly_buys / ok,
+        }
+        for label, value in breadth.items():
+            row = find_label_row(bws, label)
+            if row is not None:
+                bws.cell(row=row, column=2, value=value)
+
+
+# FRED macro rows: (label, code, kind, lookback_observations)
+_MACRO_ROWS = [
+    ("3M", "DGS3MO", "rate", 5),
+    ("2Y", "DGS2", "rate", 5),
+    ("5Y", "DGS5", "rate", 5),
+    ("10Y", "DGS10", "rate", 5),
+    ("30Y", "DGS30", "rate", 5),
+    ("2s10s", "T10Y2Y", "rate", 5),
+    ("3M10Y", "T10Y3M", "rate", 5),
+    ("Fed Funds Effective", "DFF", "rate", 22),
+    ("CPI YoY", "CPIAUCSL", "yoy", None),
+    ("PPI YoY", "PPIACO", "yoy", None),
+    ("Unemployment", "UNRATE", "rate", 1),
+    ("Nonfarm Payrolls (chg, 000s)", "PAYEMS", "nfp", None),
+    ("GDP Nowcast (Atlanta Fed)", "GDPNOW", "rate", 1),
+]
+
+
+def _populate_macro(wb) -> None:
+    """Fill the Macro tab: Current / Previous / Change for each indicator,
+    plus the next FOMC date. FRED rows need an API key; FOMC does not."""
+    if "Macro" not in wb.sheetnames:
+        return
+    mws = wb["Macro"]
+
+    if config.get("fred_api_key"):
+        for label, code, kind, lookback in _MACRO_ROWS:
+            row = find_label_row(mws, label)
+            if row is None:
+                continue
+            cur = prev = None
+            if kind == "rate":
+                latest = fc.latest_value(code)
+                prior = fc.value_n_ago(code, lookback)
+                cur = latest / 100.0 if latest is not None else None
+                prev = prior / 100.0 if prior is not None else None
+            elif kind == "yoy":
+                cur = fc.yoy_change(code)
+                prev = fc.yoy_change_prev(code)
+            elif kind == "nfp":
+                cur = fc.monthly_change(code, 0)
+                prev = fc.monthly_change(code, 1)
+            mws.cell(row=row, column=2, value=cur)
+            mws.cell(row=row, column=3, value=prev)
+            if cur is not None and prev is not None:
+                mws.cell(row=row, column=4, value=cur - prev)
+
+    # FOMC calendar — no API key needed
+    fomc_row = find_label_row(mws, "Next FOMC date")
+    if fomc_row is not None:
+        nxt = fc.next_fomc_date()
+        mws.cell(row=fomc_row, column=2, value=nxt or "(update FOMC_DECISION_DATES)")
+        days_row = find_label_row(mws, "Days to FOMC")
+        if days_row is not None and nxt:
+            import datetime as _dt
+            delta = (_dt.date.fromisoformat(nxt) - _dt.date.today()).days
+            mws.cell(row=days_row, column=2, value=delta)
 
 
 def _populate_screener(wb, force: bool = False) -> None:

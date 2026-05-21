@@ -196,14 +196,24 @@ def build_market_daily(out_path: Path) -> Path:
 
     # --- Breadth tab ---
     bws = wb.create_sheet("Breadth")
-    _set_header(bws, "Market Breadth & Internals", 10)
-    _col_widths(bws, {1: 36, 2: 14, 3: 14, 4: 14, 5: 14})
+    _set_header(bws, "Watchlist Breadth & Internals", 10)
+    _col_widths(bws, {1: 34, 2: 14, 3: 40})
     rb = 3
-    rb = _section(bws, rb, 1, "Breadth Metrics", span=5)
-    for label in ("% S&P above 50-DMA", "% S&P above 200-DMA",
-                  "New 52w Highs (S&P)", "New 52w Lows (S&P)",
-                  "A/D Line (5d delta)", "McClellan Summation"):
-        rb = _label_value(bws, rb, 1, label, fmt=S.NUM_FMT)
+    rb = _section(bws, rb, 1, "Breadth — computed across your watchlist universe", span=3)
+    for label, fmt in (("Tickers with data", S.INT_FMT),
+                       ("% above 50-DMA", S.PCT_FMT),
+                       ("% above 200-DMA", S.PCT_FMT),
+                       ("New 52-week Highs", S.INT_FMT),
+                       ("New 52-week Lows", S.INT_FMT),
+                       ("Advancers (today)", S.INT_FMT),
+                       ("Decliners (today)", S.INT_FMT),
+                       ("Advance/Decline ratio", S.NUM_FMT),
+                       ("% with Daily Buy Signal", S.PCT_FMT),
+                       ("% with Weekly Buy Signal", S.PCT_FMT)):
+        bws.cell(row=rb, column=1, value=label).font = S.LABEL_FONT
+        bws.cell(row=rb, column=2).number_format = fmt
+        bws.cell(row=rb, column=2).alignment = S.RIGHT
+        rb += 1
 
     # --- Watchlist tab (full list, one row per ticker) ---
     wlw = wb.create_sheet("Watchlist")
@@ -237,23 +247,44 @@ def build_market_daily(out_path: Path) -> Path:
     # --- Macro tab ---
     mws = wb.create_sheet("Macro")
     _set_header(mws, "Macro Reference", 8)
-    _col_widths(mws, {1: 36, 2: 14, 3: 14, 4: 14})
+    _col_widths(mws, {1: 32, 2: 14, 3: 14, 4: 14, 5: 30})
     rm = 3
-    rm = _section(mws, rm, 1, "US Treasury Curve", span=4)
-    for label in ("3M", "2Y", "5Y", "10Y", "30Y"):
-        rm = _label_value(mws, rm, 1, label, fmt=S.PCT_FMT)
-    rm += 1
-    rm = _section(mws, rm, 1, "Curve Spreads", span=4)
-    for label in ("2s10s", "3M10Y"):
-        rm = _label_value(mws, rm, 1, label, fmt=S.PCT_FMT)
-    rm += 1
-    rm = _section(mws, rm, 1, "Macro Indicators", span=4)
-    for label in ("Fed Funds Effective", "CPI YoY", "PPI YoY", "Unemployment",
-                  "Nonfarm Payrolls (chg)", "GDP Nowcast (Atlanta Fed)"):
-        rm = _label_value(mws, rm, 1, label, fmt=S.NUM_FMT)
-    rm += 1
+
+    def _macro_section(start_row, title, rows):
+        """Section banner + Current/Previous/Change header + labelled rows."""
+        r = _section(mws, start_row, 1, title, span=4)
+        for i, h in enumerate(("", "Current", "Previous", "Change")):
+            c = mws.cell(row=r, column=1 + i, value=h)
+            if h:
+                c.fill = S.SUBSECTION_FILL
+                c.font = S.LABEL_FONT
+                c.alignment = S.CENTER
+        r += 1
+        for label, fmt in rows:
+            mws.cell(row=r, column=1, value=label).font = S.LABEL_FONT
+            for c in (2, 3, 4):
+                mws.cell(row=r, column=c).number_format = fmt
+                mws.cell(row=r, column=c).alignment = S.RIGHT
+            r += 1
+        return r + 1
+
+    rm = _macro_section(rm, "US Treasury Curve (Current vs 1 week ago)", [
+        ("3M", S.PCT_FMT), ("2Y", S.PCT_FMT), ("5Y", S.PCT_FMT),
+        ("10Y", S.PCT_FMT), ("30Y", S.PCT_FMT)])
+    rm = _macro_section(rm, "Curve Spreads (Current vs 1 week ago)", [
+        ("2s10s", S.PCT_FMT), ("3M10Y", S.PCT_FMT)])
+    rm = _macro_section(rm, "Macro Indicators", [
+        ("Fed Funds Effective", S.PCT_FMT),
+        ("CPI YoY", S.PCT_FMT),
+        ("PPI YoY", S.PCT_FMT),
+        ("Unemployment", S.PCT_FMT),
+        ("Nonfarm Payrolls (chg, 000s)", S.NUM_FMT),
+        ("GDP Nowcast (Atlanta Fed)", S.PCT_FMT)])
     rm = _section(mws, rm, 1, "Calendar", span=4)
-    _label_value(mws, rm, 1, "Next FOMC date", fmt=None)
+    mws.cell(row=rm, column=1, value="Next FOMC date").font = S.LABEL_FONT
+    rm += 1
+    mws.cell(row=rm, column=1, value="Days to FOMC").font = S.LABEL_FONT
+    mws.cell(row=rm, column=2).number_format = S.INT_FMT
 
     # --- Screener tab ---
     sws = wb.create_sheet("Screener")

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import pandas as pd
 
 from data import edgar_client
@@ -156,3 +158,39 @@ def test_form4_count_handles_empty(monkeypatch):
     monkeypatch.setattr(edgar_client, "_submissions",
                         lambda ticker, force=False: None)
     assert edgar_client.form4_count("EMPTY") == 0
+
+
+def test_fred_next_fomc_date():
+    import datetime as dt
+    from data import fred_client as fc
+    # Between two meetings → returns the upcoming one
+    assert fc.next_fomc_date(dt.date(2026, 5, 21)) == "2026-06-17"
+    # Exactly on a meeting day → returns that day
+    assert fc.next_fomc_date(dt.date(2026, 6, 17)) == "2026-06-17"
+    # Day after → next meeting
+    assert fc.next_fomc_date(dt.date(2026, 6, 18)) == "2026-07-29"
+
+
+def test_fred_yoy_change(monkeypatch):
+    import pandas as pd
+    from data import fred_client as fc
+    # 14 monthly observations; index rises 100 → 113
+    dates = pd.date_range("2025-01-01", periods=14, freq="MS")
+    vals = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113]
+    fake = pd.DataFrame({"date": dates, "series": "CPIAUCSL", "value": vals})
+    monkeypatch.setattr(fc, "series", lambda code, force=False: fake)
+    # latest=113 (iloc[-1]), 12 months back=101 (iloc[-13]) → 113/101-1
+    assert fc.yoy_change("CPIAUCSL") == pytest.approx(113 / 101 - 1)
+    # previous month: 112 (iloc[-2]) vs 100 (iloc[-14]) → 112/100-1 = 0.12
+    assert fc.yoy_change_prev("CPIAUCSL") == pytest.approx(0.12)
+
+
+def test_fred_monthly_change(monkeypatch):
+    import pandas as pd
+    from data import fred_client as fc
+    dates = pd.date_range("2025-01-01", periods=4, freq="MS")
+    fake = pd.DataFrame({"date": dates, "series": "PAYEMS",
+                         "value": [150000, 150200, 150350, 150550]})
+    monkeypatch.setattr(fc, "series", lambda code, force=False: fake)
+    assert fc.monthly_change("PAYEMS", 0) == pytest.approx(200)   # 150550-150350
+    assert fc.monthly_change("PAYEMS", 1) == pytest.approx(150)   # 150350-150200
