@@ -1,30 +1,29 @@
-# Watchlist — one ticker per line. Lines starting with # are ignored.
-# Edit freely: add/remove tickers, no commas or quotes needed.
+# Watchlist — one ticker per line, in Yahoo Finance / yfinance format.
+# Lines starting with # are ignored. Text after # on a line is a comment.
 #
-# NOTE: tickers that are pure numbers (6857, 600584, etc.) or foreign
-# listings may need an exchange suffix to resolve in yfinance, e.g.
-#   6857  -> 6857.T   (Tokyo)
-#   600584 -> 600584.SS (Shanghai)
-#   AIXA  -> AIXA.DE  (Frankfurt)
-#   BESI  -> BESI.AS  (Amsterdam)
-# Tickers that don't resolve will show "(no data)" on the Watchlist tab.
-# Indices like VIX resolve better as ^VIX.
+# Non-US listings carry a Yahoo exchange suffix:
+#   .T  Tokyo      .SS Shanghai   .DE Frankfurt (Xetra)
+#   .PA Euronext Paris   .AS Euronext Amsterdam
+#   .ST Stockholm  .L  London     .SW Swiss     .TO Toronto   .BK Bangkok
+# Indices use a ^ prefix (^VIX).
+#
+# Edit freely. Tickers that don't resolve show "(no data)" on the Watchlist tab.
 
 ZETA
 ZEPP
 XNET
 XLE
-XFAB
+XFAB.PA          # Euronext Paris — X-FAB
 WULF
 WOLF
 WGMI
 WDC
-VU
+VU.PA            # Euronext Paris — Vusiongroup
 VST
 VSH
 VRT
 VNET
-VIX
+^VIX             # CBOE Volatility Index
 VICR
 VIAV
 VECO
@@ -56,21 +55,21 @@ SOXL
 SOUN
 SONY
 SOLS
-SOI
+SOI.PA           # Euronext Paris — Soitec
 SOFI
 SNOW
 SNDK
 SMR
-SMHN
+SMHN.DE          # Xetra — SUSS MicroTec
 SMCI
-SIVE
+SIVE.ST          # Stockholm
 SITM
 SIMO
 SHOP
 SG
 SEDG
 SCCO
-SBGSF
+SBGSF            # OTC — Schneider Electric
 SBET
 SATL
 SANM
@@ -129,36 +128,36 @@ MOD
 MMM
 META
 MDB
-M7U
+M7U.DE           # Xetra
 LYFT
 LUNR
 LUMN
 LRCX
-LPK
+LPK.DE           # Xetra — LPKF Laser
 LNG
 LMND
 LLY
-LKNCY
+LKNCY            # OTC — Luckin Coffee
 LITE
 LEU
 LDI
 KTOS
 KORU
-KER
+KER.PA           # Euronext Paris — Kering
 JPM
 JOBY
 JD
 IREN
-IQE
+IQE.L            # London — IQE plc
 IONQ
 INTU
 INTC
 IGV
 IBKR
 HYMC
-HUBN
+HUBN.SW          # Swiss — Huber+Suhner
 HSAI
-HPS.A
+HPS-A.TO         # Toronto — Hammond Power Solutions Class A
 HOOD
 HON
 HNGE
@@ -172,7 +171,7 @@ GFS
 GEV
 GE
 GDX
-G1A
+G1A.DE           # Xetra — GEA Group
 FUTU
 FPS
 FORM
@@ -194,7 +193,7 @@ DRAM
 DOCS
 DNN
 DLTR
-DELTA
+DELTA.BK         # Bangkok — Delta Electronics Thailand
 DELL
 CYD
 CSIQ
@@ -222,7 +221,7 @@ BMNR
 BLSH
 BLK
 BKSY
-BESI
+BESI.AS          # Euronext Amsterdam — BE Semiconductor
 BE
 BBAI
 BABA
@@ -243,26 +242,26 @@ AMPX
 AMKR
 AMD
 AMAT
-ALRIB
+ALRIB.PA         # Euronext Growth Paris — Riber
 ALMU
 ALAB
-AIXA
+AIXA.DE          # Xetra — AIXTRON
 AIP
 AIOT
 AEIS
 AEHR
 ADBE
-ABPWW
+ABPWW            # OTC — warrant
 ABAT
 AAPL
 AAOI
-6857
-6777
-6315
-600584
-5214
-4092
-4062
-3103
-285A
-255A
+6857.T           # Tokyo — Advantest
+6777.T           # Tokyo
+6315.T           # Tokyo
+600584.SS        # Shanghai
+5214.T           # Tokyo
+4092.T           # Tokyo
+4062.T           # Tokyo — IBIDEN
+3103.T           # Tokyo
+285A.T           # Tokyo
+255A.T           # Tokyo
