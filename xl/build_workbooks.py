@@ -205,6 +205,35 @@ def build_market_daily(out_path: Path) -> Path:
                   "A/D Line (5d delta)", "McClellan Summation"):
         rb = _label_value(bws, rb, 1, label, fmt=S.NUM_FMT)
 
+    # --- Watchlist tab (full list, one row per ticker) ---
+    wlw = wb.create_sheet("Watchlist")
+    _set_header(wlw, "Watchlist — full list (edit watchlist.txt to change)", 10)
+    _col_widths(wlw, {1: 10, 2: 30, 3: 11, 4: 11, 5: 13, 6: 11, 7: 11,
+                      8: 11, 9: 11, 10: 26})
+    wl_headers = ["Ticker", "Name", "% Daily", "% 5D", "% Off 52w-Hi",
+                  "% YTD", "RS-SPY", "Daily Buy", "Weekly Buy", "Trend 30d"]
+    for i, h in enumerate(wl_headers):
+        c = wlw.cell(row=3, column=i + 1, value=h)
+        c.fill = S.SUBSECTION_FILL
+        c.font = S.LABEL_FONT
+        c.alignment = S.CENTER
+        c.border = S.BOX
+    # 300 data rows — plenty for a few hundred tickers
+    for r in range(4, 304):
+        for c in range(3, 8):
+            wlw.cell(row=r, column=c).number_format = S.PCT_FMT
+        wlw.cell(row=r, column=10).font = Font(name="Consolas", size=11)
+    # Color scale on % columns
+    rule = ColorScaleRule(
+        start_type="num", start_value=-0.05, start_color="EF4444",
+        mid_type="num", mid_value=0, mid_color="FFFFFF",
+        end_type="num", end_value=0.05, end_color="10B981",
+    )
+    wlw.conditional_formatting.add("C4:G303", rule)
+    # AutoFilter so the user can sort by any column
+    wlw.auto_filter.ref = "A3:J303"
+    wlw.freeze_panes = "A4"
+
     # --- Macro tab ---
     mws = wb.create_sheet("Macro")
     _set_header(mws, "Macro Reference", 8)

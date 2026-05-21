@@ -100,9 +100,11 @@ def main():
         return
 
     if args.routine:
-        _ensure_watchlist_tickers_exist(args.force)
+        # Refresh any per-ticker deep-dive workbooks the user has created,
+        # then the market dashboard (which scans the full watchlist.txt for
+        # the Watchlist tab + Screener — no per-ticker workbook needed).
         _refresh_watchlist(args.force)
-        _refresh_market(args.force)  # last so Summary tab sees the freshest data
+        _refresh_market(args.force)
         return
 
     if args.watchlist:
@@ -141,31 +143,6 @@ def _refresh_market(force: bool):
         sys.exit(1)
     out = populator.populate_market_daily(path, force=force)
     print(f"Populated {out}")
-
-
-def _ensure_watchlist_tickers_exist(force: bool):
-    """For every ticker in settings.watchlist, make sure there's a populated
-    Ticker_*.xlsx file in tickers_dir. Creates missing ones from the template."""
-    watchlist = config.get("watchlist", []) or []
-    if not watchlist:
-        return
-    template = _template_path()
-    if not template.exists():
-        return
-    tdir = _tickers_dir()
-    missing = []
-    for tkr in watchlist:
-        if not (tdir / f"Ticker_{tkr.upper()}.xlsx").exists():
-            missing.append(tkr)
-    if missing:
-        print(f"Watchlist: {len(missing)} new ticker(s) to populate: {missing}")
-        for tkr in missing:
-            out = tdir / f"Ticker_{tkr.upper()}.xlsx"
-            try:
-                populator.populate_ticker(template, out, tkr, force=force)
-                print(f"  {tkr}: created")
-            except Exception as e:
-                print(f"  {tkr}: FAILED ({type(e).__name__}: {e})")
 
 
 def _refresh_watchlist(force: bool):

@@ -33,3 +33,23 @@ def load() -> dict:
 
 def get(key, default=None):
     return load().get(key, default)
+
+
+def get_watchlist() -> list[str]:
+    """Return the user's watchlist tickers.
+
+    Prefers a plain-text `watchlist.txt` in the repo root (one ticker per
+    line, '#' starts a comment) — easy to edit without JSON syntax. Falls
+    back to the 'watchlist' key in settings if the file is absent/empty.
+    """
+    wl_file = ROOT / "watchlist.txt"
+    if wl_file.exists():
+        tickers: list[str] = []
+        for line in wl_file.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                tickers.append(line.upper())
+        if tickers:
+            return tickers
+    return load().get("watchlist", []) or []
+

@@ -260,6 +260,22 @@ def test_template_has_analysis_charts(template_path):
     assert len(ws._charts) == 4, f"expected 4 charts on Analysis, got {len(ws._charts)}"
 
 
+def test_config_get_watchlist_reads_file(tmp_path, monkeypatch):
+    import config
+    wl_file = tmp_path / "watchlist.txt"
+    wl_file.write_text(
+        "# a comment\n"
+        "NVDA\n"
+        "AAPL  # inline comment\n"
+        "\n"
+        "msft\n"
+    )
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    monkeypatch.setattr(config, "_SETTINGS", None)
+    wl = config.get_watchlist()
+    assert wl == ["NVDA", "AAPL", "MSFT"]  # comments stripped, uppercased
+
+
 def test_asset_light_detection():
     # Simulating populate_ticker's gate decision via the industry constants
     industries = [

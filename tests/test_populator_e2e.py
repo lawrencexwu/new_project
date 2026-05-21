@@ -26,7 +26,7 @@ def _stmt(rows: dict[str, list[float]], n=8) -> pd.DataFrame:
 def synthetic_data(monkeypatch):
     """Patch yfinance_client + fred_client to return deterministic fake data."""
 
-    def fake_prices(ticker, period="10y", interval="1d", force=False):
+    def fake_prices(ticker, period="10y", interval="1d", force=False, retries=2):
         dates = pd.date_range("2024-01-01", periods=300, freq="D")
         closes = [100 + i * 0.1 + (i % 7) * 0.5 for i in range(300)]
         return pd.DataFrame({"date": dates, "Close": closes, "ticker": ticker})
@@ -265,7 +265,7 @@ def test_populate_positions_with_correlations(tmp_path, monkeypatch):
             path.append(path[-1] * (1 + r))
         return path[1:]
 
-    def fake_prices(ticker, period="1y", interval="1d", force=False):
+    def fake_prices(ticker, period="1y", interval="1d", force=False, retries=2):
         dates = pd.date_range("2024-01-01", periods=120, freq="D")
         if ticker == "AAA":
             closes = make_path(base_returns, 100)
@@ -279,6 +279,7 @@ def test_populate_positions_with_correlations(tmp_path, monkeypatch):
 
     monkeypatch.setattr(populator.yfc, "prices", fake_prices)
     monkeypatch.setattr(populator.yfc, "calendar", lambda t, force=False: {})
+    monkeypatch.setattr(populator.config, "get_watchlist", lambda: [])
     populator.populate_market_daily(template)
 
     wb2 = load_workbook(template)
@@ -300,15 +301,7 @@ def test_screener_flags_double_buy_signal(tmp_path, monkeypatch):
     template = tmp_path / "Market_Daily.xlsx"
     build_workbooks.build_market_daily(template)
 
-    wb = load_workbook(template)
-    pos = wb["Positions"]
-    pos.cell(row=4, column=1, value="UP")
-    pos.cell(row=4, column=2, value="Uptrend Co")
-    pos.cell(row=5, column=1, value="DOWN")
-    pos.cell(row=5, column=2, value="Downtrend Co")
-    wb.save(template)
-
-    def fake_prices(ticker, period="2y", interval="1d", force=False):
+    def fake_prices(ticker, period="2y", interval="1d", force=False, retries=2):
         dates = pd.date_range("2024-01-01", periods=300, freq="D")
         if ticker == "UP":
             closes = [100 + i * 0.5 for i in range(300)]   # clear uptrend
@@ -320,6 +313,9 @@ def test_screener_flags_double_buy_signal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(populator.yfc, "prices", fake_prices)
     monkeypatch.setattr(populator.yfc, "calendar", lambda t, force=False: {})
+    monkeypatch.setattr(populator.yfc, "info", lambda t, force=False: {})
+    # Watchlist drives the Screener now — UP trends up, DOWN trends down.
+    monkeypatch.setattr(populator.config, "get_watchlist", lambda: ["UP", "DOWN"])
     populator.populate_market_daily(template)
 
     wb2 = load_workbook(template)
@@ -330,6 +326,13 @@ def test_screener_flags_double_buy_signal(tmp_path, monkeypatch):
     assert scr.cell(row=4, column=4).value == "YES"
     # Row 5 should be empty (DOWN doesn't pass)
     assert scr.cell(row=5, column=1).value is None
+
+    # The Watchlist tab itself should also be populated
+    wl = wb2["Watchlist"]
+    assert wl.cell(row=4, column=1).value == "UP"
+    assert wl.cell(row=4, column=8).value == "YES"   # daily buy
+    assert wl.cell(row=5, column=1).value == "DOWN"
+    assert wl.cell(row=5, column=8).value == "NO"
 
 
 def test_summary_aggregates_ticker_files(tmp_path, monkeypatch):
@@ -380,8 +383,9 @@ def test_summary_aggregates_ticker_files(tmp_path, monkeypatch):
     build_workbooks.build_market_daily(market_path)
 
     monkeypatch.setattr(populator.yfc, "prices",
-                        lambda t, period="2y", interval="1d", force=False: pd.DataFrame())
+                        lambda t, period="2y", interval="1d", force=False, retries=2: pd.DataFrame())
     monkeypatch.setattr(populator.yfc, "calendar", lambda t, force=False: {})
+    monkeypatch.setattr(populator.config, "get_watchlist", lambda: [])
 
     populator.populate_market_daily(market_path)
 

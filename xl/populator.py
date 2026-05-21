@@ -1236,6 +1236,7 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     _populate_positions(wb, force=force, sparkline_specs=sparkline_specs)
     _populate_summary(wb, sparkline_specs=sparkline_specs)
     _populate_earnings_calendar(wb, force=force)
+    _populate_watchlist_sheet(wb, force=force)
 
     universe = config.get("universe", {})
 
@@ -1251,8 +1252,9 @@ def populate_market_daily(workbook_path: Path, force: bool = False) -> Path:
     HIDDEN_DATA_COL_END = 59     # BG column
     daily_plan_sparklines: list[dict] = []
 
-    # Auto-fill the Custom Watchlist section with tickers from settings.watchlist
-    watchlist = config.get("watchlist", []) or []
+    # Auto-fill the Custom Watchlist section with the first 25 watchlist
+    # tickers (the full list lives on the dedicated Watchlist tab).
+    watchlist = config.get_watchlist()
     if watchlist:
         cw_anchor = find_section_anchor(
             ws, "Custom Watchlist (25 rows, user-entered)"
@@ -1662,61 +1664,84 @@ def _to_number(v):
         return None
 
 
+def _populate_watchlist_sheet(wb, force: bool = False) -> None:
+    """Fill the Watchlist tab — one row per ticker from watchlist.txt, with
+    %D / %5D / off-52w / YTD / RS-SPY / buy signals / Unicode sparkline."""
+    if "Watchlist" not in wb.sheetnames:
+        return
+    ws = wb["Watchlist"]
+    tickers = config.get_watchlist()
+    if not tickers:
+        return
+
+    spy = yfc.prices("SPY", period="6mo", force=force)
+    spy_close = _close_series(spy)
+    spy_5d = signals.pct_change(spy_close, 5) or 0.0
+
+    ok = 0
+    failed = 0
+    for i, tkr in enumerate(tickers[:300]):
+        r = 4 + i
+        ws.cell(row=r, column=1, value=tkr)
+        # retries=0 — a 250+ ticker scan shouldn't wait on backoff for the
+        # foreign/invalid symbols that won't resolve anyway.
+        px = yfc.prices(tkr, period="2y", force=force, retries=0)
+        close = _close_series(px)
+        if close is None or close.empty:
+            failed += 1
+            c = ws.cell(row=r, column=10, value="(no data)")
+            c.font = Font(name="Calibri", size=9, italic=True, color="9CA3AF")
+            continue
+        ok += 1
+        ws.cell(row=r, column=3, value=signals.pct_change(close, 1))
+        ws.cell(row=r, column=4, value=signals.pct_change(close, 5))
+        ws.cell(row=r, column=5, value=signals.pct_off_52w_high(close))
+        ws.cell(row=r, column=6, value=signals.ytd_change(px))
+        five_d = signals.pct_change(close, 5)
+        ws.cell(row=r, column=7,
+                value=(five_d - spy_5d) if five_d is not None else None)
+        ws.cell(row=r, column=8,
+                value="YES" if signals.daily_buy_signal(close) else "NO")
+        ws.cell(row=r, column=9,
+                value="YES" if signals.weekly_buy_signal(close) else "NO")
+        spark = ws.cell(row=r, column=10,
+                        value=block_sparkline(close.tail(30).tolist(), width=20))
+        spark.font = _SPARKLINE_FONT
+
+    print(f"  Watchlist: {ok} ok, {failed} no-data ({len(tickers)} total)")
+
+
 def _populate_screener(wb, force: bool = False) -> None:
-    """Scan Custom Watchlist tickers + any user-entered position tickers; flag
-    those where Daily + Weekly buy signals both YES. Write to Screener sheet."""
-    if "Screener" not in wb.sheetnames:
+    """Flag watchlist names where Daily + Weekly buy signals are both YES.
+    Reads the already-computed signals off the Watchlist tab — no re-fetch."""
+    if "Screener" not in wb.sheetnames or "Watchlist" not in wb.sheetnames:
         return
     screener = wb["Screener"]
-    daily_plan = wb["Daily Plan"]
+    watchlist = wb["Watchlist"]
 
-    # Custom Watchlist anchor on Daily Plan
-    cw_anchor = find_section_anchor(
-        daily_plan, "Custom Watchlist (25 rows, user-entered)"
-    )
-    candidates: list[tuple[str, str]] = []
-    if cw_anchor is not None:
-        for i in range(25):
-            row = cw_anchor + 2 + i  # +2: section + col header
-            tkr = daily_plan.cell(row=row, column=9).value
-            name = daily_plan.cell(row=row, column=10).value
-            if tkr and str(tkr).strip():
-                candidates.append((str(tkr).strip().upper(), str(name or "")))
-
-    # Also include position tickers
-    if "Positions" in wb.sheetnames:
-        pos = wb["Positions"]
-        for r in range(4, 29):
-            tkr = pos.cell(row=r, column=1).value
-            name = pos.cell(row=r, column=2).value
-            if tkr and str(tkr).strip():
-                candidates.append((str(tkr).strip().upper(), str(name or "")))
-
-    # Clear existing screener rows (header is row 3; data rows from row 4)
-    for r in range(4, 50):
+    # Clear existing screener rows (header is row 3; data from row 4)
+    for r in range(4, 60):
         for c in range(1, 8):
             screener.cell(row=r, column=c).value = None
 
     write_row = 4
-    for tkr, name in candidates:
-        px = yfc.prices(tkr, period="2y", force=force)
-        close = _close_series(px)
-        if close is None or close.empty:
+    for r in range(4, 304):
+        tkr = watchlist.cell(row=r, column=1).value
+        if not tkr:
             continue
-        daily = signals.daily_buy_signal(close)
-        weekly = signals.weekly_buy_signal(close)
-        if not (daily and weekly):
+        daily = watchlist.cell(row=r, column=8).value
+        weekly = watchlist.cell(row=r, column=9).value
+        if daily != "YES" or weekly != "YES":
             continue
         screener.cell(row=write_row, column=1, value=tkr)
-        screener.cell(row=write_row, column=2, value=name)
+        screener.cell(row=write_row, column=2,
+                      value=watchlist.cell(row=r, column=2).value)
         screener.cell(row=write_row, column=3, value="YES")
         screener.cell(row=write_row, column=4, value="YES")
-        screener.cell(row=write_row, column=5, value=signals.pct_change(close, 5))
-        screener.cell(row=write_row, column=5).number_format = "0.0%;[Red]-0.0%"
-        screener.cell(row=write_row, column=6, value=signals.ytd_change(px))
-        screener.cell(row=write_row, column=6).number_format = "0.0%;[Red]-0.0%"
-        screener.cell(row=write_row, column=7, value=signals.pct_off_52w_high(close))
-        screener.cell(row=write_row, column=7).number_format = "0.0%;[Red]-0.0%"
+        for src_col, dst_col in ((4, 5), (6, 6), (5, 7)):
+            v = watchlist.cell(row=r, column=src_col).value
+            cell = screener.cell(row=write_row, column=dst_col, value=v)
+            cell.number_format = "0.0%;[Red]-0.0%"
         write_row += 1
 
 
