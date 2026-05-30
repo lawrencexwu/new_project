@@ -1,0 +1,196 @@
+"""Test EDGAR statement assembly against a synthetic company-facts blob."""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import pandas as pd
+
+from data import edgar_client
+
+
+def _fake_facts():
+    return {
+        "entityName": "Acme Corp",
+        "facts": {
+            "us-gaap": {
+                "Revenues": {
+                    "units": {
+                        "USD": [
+                            {"end": "2024-03-31", "val": 100, "form": "10-Q", "fp": "Q1", "filed": "2024-05-01"},
+                            {"end": "2024-06-30", "val": 110, "form": "10-Q", "fp": "Q2", "filed": "2024-08-01"},
+                            {"end": "2024-09-30", "val": 120, "form": "10-Q", "fp": "Q3", "filed": "2024-11-01"},
+                            {"end": "2024-12-31", "val": 130, "form": "10-K", "fp": "Q4", "filed": "2025-02-15"},
+                            # Annual rollup we want to filter out
+                            {"end": "2024-12-31", "val": 460, "form": "10-K", "fp": "FY", "filed": "2025-02-15"},
+                        ]
+                    }
+                },
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            {"end": "2024-03-31", "val": 15, "form": "10-Q", "fp": "Q1", "filed": "2024-05-01"},
+                            {"end": "2024-06-30", "val": 18, "form": "10-Q", "fp": "Q2", "filed": "2024-08-01"},
+                            # Same quarter restated later — newer filed wins
+                            {"end": "2024-06-30", "val": 19, "form": "10-Q", "fp": "Q2", "filed": "2024-09-15"},
+                        ]
+                    }
+                },
+                "Assets": {
+                    "units": {
+                        "USD": [
+                            {"end": "2024-03-31", "val": 1000, "form": "10-Q", "fp": "Q1", "filed": "2024-05-01"},
+                            {"end": "2024-06-30", "val": 1050, "form": "10-Q", "fp": "Q2", "filed": "2024-08-01"},
+                        ]
+                    }
+                },
+                "NetCashProvidedByUsedInOperatingActivities": {
+                    "units": {
+                        "USD": [
+                            {"end": "2024-03-31", "val": 25, "form": "10-Q", "fp": "Q1", "filed": "2024-05-01"},
+                            {"end": "2024-06-30", "val": 30, "form": "10-Q", "fp": "Q2", "filed": "2024-08-01"},
+                        ]
+                    }
+                },
+            }
+        }
+    }
+
+
+def test_quarterly_concept_filters_annuals():
+    facts = _fake_facts()
+    vals = edgar_client._quarterly_concept_values(
+        facts, ["Revenues", "SalesRevenueNet"]
+    )
+    assert pd.Timestamp("2024-12-31") in vals
+    # Annual FY rollup of 460 should not have replaced the Q4 10-K value 130
+    assert vals[pd.Timestamp("2024-12-31")] == 130
+
+
+def test_quarterly_concept_uses_first_matching():
+    facts = _fake_facts()
+    vals = edgar_client._quarterly_concept_values(
+        facts, ["NonExistent", "Revenues"]
+    )
+    assert vals[pd.Timestamp("2024-03-31")] == 100
+
+
+def test_quarterly_concept_restatement_picks_latest():
+    facts = _fake_facts()
+    vals = edgar_client._quarterly_concept_values(facts, ["NetIncomeLoss"])
+    assert vals[pd.Timestamp("2024-06-30")] == 19  # later restatement, not 18
+
+
+def test_statement_from_concepts_yfinance_shape(monkeypatch):
+    # Patch company_facts() so we don't hit the network
+    monkeypatch.setattr(edgar_client, "company_facts", lambda ticker, force=False: _fake_facts())
+
+    is_df = edgar_client.income_statement("FAKE")
+    assert "line" in is_df.columns
+    rev_row = is_df[is_df["line"] == "Total Revenue"]
+    assert not rev_row.empty
+    rev_row = rev_row.drop(columns=["line"]).iloc[0]
+    rev_row = rev_row.dropna()
+    assert len(rev_row) == 4  # 4 quarters
+
+    bs_df = edgar_client.balance_sheet("FAKE")
+    ta_row = bs_df[bs_df["line"] == "Total Assets"]
+    assert not ta_row.empty
+    ta_row = ta_row.drop(columns=["line"]).iloc[0].dropna()
+    assert len(ta_row) == 2
+
+    cf_df = edgar_client.cashflow("FAKE")
+    ocf_row = cf_df[cf_df["line"] == "Operating Cash Flow"]
+    assert not ocf_row.empty
+    ocf_row = ocf_row.drop(columns=["line"]).iloc[0].dropna()
+    assert len(ocf_row) == 2
+
+
+def test_statement_from_concepts_empty_when_no_facts(monkeypatch):
+    monkeypatch.setattr(edgar_client, "company_facts", lambda ticker, force=False: None)
+    assert edgar_client.income_statement("EMPTY").empty
+    assert edgar_client.balance_sheet("EMPTY").empty
+    assert edgar_client.cashflow("EMPTY").empty
+
+
+def _fake_submissions():
+    # Mix of forms, with some Form 4s in the last 90 days and some older
+    today = pd.Timestamp.now().normalize()
+    return {
+        "name": "Acme Corp",
+        "filings": {
+            "recent": {
+                "form": ["10-K", "4", "4", "10-Q", "4", "8-K", "4"],
+                "filingDate": [
+                    (today - pd.Timedelta(days=30)).strftime("%Y-%m-%d"),
+                    (today - pd.Timedelta(days=15)).strftime("%Y-%m-%d"),  # Form 4 recent
+                    (today - pd.Timedelta(days=45)).strftime("%Y-%m-%d"),  # Form 4 recent
+                    (today - pd.Timedelta(days=20)).strftime("%Y-%m-%d"),
+                    (today - pd.Timedelta(days=85)).strftime("%Y-%m-%d"),  # Form 4 recent
+                    (today - pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
+                    (today - pd.Timedelta(days=120)).strftime("%Y-%m-%d"),  # Form 4 too old
+                ],
+                "accessionNumber": ["A1", "A2", "A3", "A4", "A5", "A6", "A7"],
+                "reportDate": [None] * 7,
+                "primaryDocument": ["doc.htm"] * 7,
+            }
+        }
+    }
+
+
+def test_form4_filings_filters_by_form_and_date(monkeypatch):
+    monkeypatch.setattr(edgar_client, "_submissions",
+                        lambda ticker, force=False: _fake_submissions())
+    df = edgar_client.recent_form4_filings("FAKE", days=90)
+    assert len(df) == 3
+    assert set(df["accessionNumber"]) == {"A2", "A3", "A5"}
+
+
+def test_form4_count(monkeypatch):
+    monkeypatch.setattr(edgar_client, "_submissions",
+                        lambda ticker, force=False: _fake_submissions())
+    assert edgar_client.form4_count("FAKE", days=90) == 3
+    assert edgar_client.form4_count("FAKE", days=200) == 4
+
+
+def test_form4_count_handles_empty(monkeypatch):
+    monkeypatch.setattr(edgar_client, "_submissions",
+                        lambda ticker, force=False: None)
+    assert edgar_client.form4_count("EMPTY") == 0
+
+
+def test_fred_next_fomc_date():
+    import datetime as dt
+    from data import fred_client as fc
+    # Between two meetings → returns the upcoming one
+    assert fc.next_fomc_date(dt.date(2026, 5, 21)) == "2026-06-17"
+    # Exactly on a meeting day → returns that day
+    assert fc.next_fomc_date(dt.date(2026, 6, 17)) == "2026-06-17"
+    # Day after → next meeting
+    assert fc.next_fomc_date(dt.date(2026, 6, 18)) == "2026-07-29"
+
+
+def test_fred_yoy_change(monkeypatch):
+    import pandas as pd
+    from data import fred_client as fc
+    # 14 monthly observations; index rises 100 → 113
+    dates = pd.date_range("2025-01-01", periods=14, freq="MS")
+    vals = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113]
+    fake = pd.DataFrame({"date": dates, "series": "CPIAUCSL", "value": vals})
+    monkeypatch.setattr(fc, "series", lambda code, force=False: fake)
+    # latest=113 (iloc[-1]), 12 months back=101 (iloc[-13]) → 113/101-1
+    assert fc.yoy_change("CPIAUCSL") == pytest.approx(113 / 101 - 1)
+    # previous month: 112 (iloc[-2]) vs 100 (iloc[-14]) → 112/100-1 = 0.12
+    assert fc.yoy_change_prev("CPIAUCSL") == pytest.approx(0.12)
+
+
+def test_fred_monthly_change(monkeypatch):
+    import pandas as pd
+    from data import fred_client as fc
+    dates = pd.date_range("2025-01-01", periods=4, freq="MS")
+    fake = pd.DataFrame({"date": dates, "series": "PAYEMS",
+                         "value": [150000, 150200, 150350, 150550]})
+    monkeypatch.setattr(fc, "series", lambda code, force=False: fake)
+    assert fc.monthly_change("PAYEMS", 0) == pytest.approx(200)   # 150550-150350
+    assert fc.monthly_change("PAYEMS", 1) == pytest.approx(150)   # 150350-150200

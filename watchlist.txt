@@ -1,0 +1,267 @@
+# Watchlist — one ticker per line, in Yahoo Finance / yfinance format.
+# Lines starting with # are ignored. Text after # on a line is a comment.
+#
+# Non-US listings carry a Yahoo exchange suffix:
+#   .T  Tokyo      .SS Shanghai   .DE Frankfurt (Xetra)
+#   .PA Euronext Paris   .AS Euronext Amsterdam
+#   .ST Stockholm  .L  London     .SW Swiss     .TO Toronto   .BK Bangkok
+# Indices use a ^ prefix (^VIX).
+#
+# Edit freely. Tickers that don't resolve show "(no data)" on the Watchlist tab.
+
+ZETA
+ZEPP
+XNET
+XLE
+XFAB.PA          # Euronext Paris — X-FAB
+WULF
+WOLF
+WGMI
+WDC
+VU.PA            # Euronext Paris — Vusiongroup
+VST
+VSH
+VRT
+VNET
+^VIX             # CBOE Volatility Index
+VICR
+VIAV
+VECO
+UUUU
+USAR
+URA
+UNH
+UMC
+UI
+UFO
+UCTT
+UAMY
+TXN
+TTMI
+TT
+TSMX
+TSM
+TSLA
+TSEM
+TQQQ
+TNMG
+TER
+SUPV
+STX
+STM
+SPY
+SOXX
+SOXL
+SOUN
+SONY
+SOLS
+SOI.PA           # Euronext Paris — Soitec
+SOFI
+SNOW
+SNDK
+SMR
+SMHN.DE          # Xetra — SUSS MicroTec
+SMCI
+SIVE.ST          # Stockholm
+SITM
+SIMO
+SHOP
+SG
+SEDG
+SCCO
+SBGSF            # OTC — Schneider Electric
+SBET
+SATL
+SANM
+RR
+ROKU
+RMBS
+RKLB
+RIOT
+RGTI
+RDDT
+RCAT
+QS
+QQQ
+QBTS
+Q
+PWR
+PRE
+POWI
+POET
+PLTR
+PLAB
+PL
+PENG
+PANW
+P
+OWLS
+OSCR
+ORCL
+OPEN
+ONTO
+ONDS
+ON
+OKLO
+NVTS
+NVT
+NVDL
+NVDA
+NTSK
+NOW
+NOK
+NNE
+NIO
+NFLX
+NET
+NBIS
+NB
+MXL
+MU
+MTSI
+MSTR
+MSFT
+MRVL
+MPWR
+MP
+MOD
+MMM
+META
+MDB
+M7U.DE           # Xetra
+LYFT
+LUNR
+LUMN
+LRCX
+LPK.DE           # Xetra — LPKF Laser
+LNG
+LMND
+LLY
+LKNCY            # OTC — Luckin Coffee
+LITE
+LEU
+LDI
+KTOS
+KORU
+KER.PA           # Euronext Paris — Kering
+JPM
+JOBY
+JD
+IREN
+IQE.L            # London — IQE plc
+IONQ
+INTU
+INTC
+IGV
+IBKR
+HYMC
+HUBN.SW          # Swiss — Huber+Suhner
+HSAI
+HPS-A.TO         # Toronto — Hammond Power Solutions Class A
+HOOD
+HON
+HNGE
+HIMS
+GRAL
+GRAB
+GOOG
+GLW
+GH
+GFS
+GEV
+GE
+GDX
+G1A.DE           # Xetra — GEA Group
+FUTU
+FPS
+FORM
+FN
+FLY
+FLNC
+FIG
+FCX
+FCEL
+EWY
+EWT
+EWJ
+ETN
+EQNR
+EOSE
+ENPH
+DVN
+DRAM
+DOCS
+DNN
+DLTR
+DELTA.BK         # Bangkok — Delta Electronics Thailand
+DELL
+CYD
+CSIQ
+CSCO
+CRWV
+CRWD
+CRML
+CRI
+CRDO
+CRCL
+COPX
+COIN
+COHU
+COHR
+CLS
+CLH
+CIFR
+CIEN
+CCJ
+CAMT
+CALM
+BTE
+BOTZ
+BMNR
+BLSH
+BLK
+BKSY
+BESI.AS          # Euronext Amsterdam — BE Semiconductor
+BE
+BBAI
+BABA
+AXTI
+AVGO
+ATOM
+ASX
+ASTS
+ASML
+ARM
+APLD
+APH
+AOSL
+ANET
+AMZN
+AMSC
+AMPX
+AMKR
+AMD
+AMAT
+ALRIB.PA         # Euronext Growth Paris — Riber
+ALMU
+ALAB
+AIXA.DE          # Xetra — AIXTRON
+AIP
+AIOT
+AEIS
+AEHR
+ADBE
+ABPWW            # OTC — warrant
+ABAT
+AAPL
+AAOI
+6857.T           # Tokyo — Advantest
+6777.T           # Tokyo
+6315.T           # Tokyo
+600584.SS        # Shanghai
+5214.T           # Tokyo
+4092.T           # Tokyo
+4062.T           # Tokyo — IBIDEN
+3103.T           # Tokyo
+285A.T           # Tokyo
+255A.T           # Tokyo

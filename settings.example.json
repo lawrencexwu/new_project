@@ -1,0 +1,28 @@
+{
+    "drive_root": "~/Google Drive/My Drive/Investing",
+    "cache_dir": "~/Google Drive/My Drive/Investing/Cache",
+    "tickers_dir": "~/Google Drive/My Drive/Investing/Tickers",
+    "archive_dir": "~/Google Drive/My Drive/Investing/Archive",
+    "market_daily_path": "~/Google Drive/My Drive/Investing/Market_Daily.xlsx",
+    "template_path": "~/Google Drive/My Drive/Investing/Tickers/Ticker_TEMPLATE.xlsx",
+    "fred_api_key": "",
+    "sec_user_agent": "Your Name your.email@example.com",
+    "cache_ttl_days": {
+        "prices": 1,
+        "statements": 30,
+        "treasury": 1,
+        "consensus": 7,
+        "shortinterest": 14,
+        "insider": 7
+    },
+    "watchlist": [],
+    "universe": {
+        "sub_market": ["IVE", "IJS", "IJJ", "IJT", "IVW", "IJK"],
+        "sub_sector_cw": ["XLE", "XLP", "XLV", "XLF", "XLRE", "XLU", "XLC", "SPY", "XLK", "XLI", "XLY", "XLB"],
+        "sub_sector_ew": ["RSPG", "RSPS", "RSPF", "RSPH", "RSPU", "RSPR", "RSPC", "RSP", "RSPD", "RSPT", "RSPN", "RSPM"],
+        "thematic": ["UNG", "USO", "XOP", "IXC", "IGV", "IHI", "CLOU", "XSW", "KIE", "OIH"],
+        "macro_risk": ["^VIX", "^MOVE", "HYG", "LQD", "DXY", "^TNX", "^FVX"]
+    },
+    "discount_rates": [0.03, 0.04, 0.05],
+    "terminal_multiples": [8.0, 10.0, 12.0]
+}

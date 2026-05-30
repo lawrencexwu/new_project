@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Optional macOS LaunchAgent for automatic morning refresh.
+
+This runs `python populate.py --routine` every weekday at 7:00 AM,
+even before you open the laptop (as long as it's powered on and connected).
+
+Setup:
+  1. Edit the two paths below:
+     - WorkingDirectory (where you cloned the repo)
+     - ProgramArguments (your path to bash + the morning.command file)
+
+  2. Save as ~/Library/LaunchAgents/com.investing.morning-routine.plist
+     (drop the .example suffix)
+
+  3. Load it:
+        launchctl load ~/Library/LaunchAgents/com.investing.morning-routine.plist
+
+  4. Verify:
+        launchctl list | grep investing
+
+To disable:
+        launchctl unload ~/Library/LaunchAgents/com.investing.morning-routine.plist
+
+Logs go to /tmp/morning-routine.log and /tmp/morning-routine.err.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.investing.morning-routine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/CHANGE_ME/Projects/macro-dashboard/morning.command</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/CHANGE_ME/Projects/macro-dashboard</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <!-- Weekdays at 7:00 AM. Add more dicts for additional times. -->
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/morning-routine.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/morning-routine.err</string>
+</dict>
+</plist>
