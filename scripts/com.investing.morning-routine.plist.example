@@ -33,11 +33,11 @@ Logs go to /tmp/morning-routine.log and /tmp/morning-routine.err.
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/CHANGE_ME/Projects/new_project/morning.command</string>
+        <string>/Users/CHANGE_ME/Projects/macro-dashboard/morning.command</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/CHANGE_ME/Projects/new_project</string>
+    <string>/Users/CHANGE_ME/Projects/macro-dashboard</string>
 
     <key>StartCalendarInterval</key>
     <array>

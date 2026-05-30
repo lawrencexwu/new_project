@@ -1,4 +1,4 @@
-# Personal Markets & Stock Analysis Dashboard
+# Macro Dashboard
 
 Two-workbook system that drives a daily market workflow and per-ticker
 fundamental + valuation + credit analysis, backed by a Python data layer
